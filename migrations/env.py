@@ -34,7 +34,9 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online():
-    url = settings.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
+    from sqlalchemy import create_engine
+
+    url = settings.DATABASE_SYNC_URL
 
     connectable = create_engine(url)
 
