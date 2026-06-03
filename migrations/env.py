@@ -37,7 +37,7 @@ def run_migrations_online():
     from sqlalchemy import create_engine
 
     url = settings.DATABASE_SYNC_URL
-
+    
     connectable = create_engine(url)
 
     with connectable.connect() as connection:
