@@ -1,11 +1,10 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, JSON
 from sqlalchemy.orm import relationship
-from app.db.database import Base
+from app.db.base import Base
 import datetime
 
 class Feed(Base):
-    __tablename__ = 'feeds'
+    __tablename__ = "feeds"
 
     id = Column(Integer, primary_key=True, index=True)
     url = Column(String, unique=True, nullable=False)
@@ -13,7 +12,8 @@ class Feed(Base):
     last_fetched_at = Column(DateTime)
     is_active = Column(Boolean, default=True)
 
-    user_feeds = relationship('UserFeed', back_populates='feed')
+    user_feeds = relationship("UserFeed", back_populates="feed")
+
 
 class UserFeed(Base):
     __tablename__ = "user_feeds"
@@ -21,6 +21,6 @@ class UserFeed(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     feed_id = Column(Integer, ForeignKey("feeds.id"), nullable=False)
-    tags = Column(ARRAY(String), default=[])
+    tags = Column(JSON, default=list)
 
     feed = relationship("Feed", back_populates="user_feeds")
