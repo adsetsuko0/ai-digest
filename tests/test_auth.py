@@ -24,7 +24,7 @@ async def test_register_duplicate_email(client):
         'email': 'newuser@example.com',
         'password': 'testpassword456'
     })
-    assert response.status_code == 400
+    assert response.status_code == 409
 
 
 
