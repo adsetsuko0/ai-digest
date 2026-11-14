@@ -1,0 +1,10 @@
+-r requirements.txt
+pytest==X
+pytest-asyncio==X
+pytest-cov==X
+aiosqlite==X
+httpx==X
+respx==X
+ruff==X
+pip-audit==X
+pre-commit==X
