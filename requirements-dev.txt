@@ -1,10 +1,10 @@
 -r requirements.txt
-pytest==X
-pytest-asyncio==X
-pytest-cov==X
-aiosqlite==X
-httpx==X
-respx==X
-ruff==X
-pip-audit==X
-pre-commit==X
+pytest==9.2.0
+pytest-asyncio==1.5.0
+pytest-cov==7.1.0
+aiosqlite==0.22.1
+httpx==0.28.1
+respx==0.23.1
+ruff==0.17.5
+pip-audit==2.10.1
+pre-commit==4.7.0
