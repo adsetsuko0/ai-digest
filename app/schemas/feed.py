@@ -1,17 +1,16 @@
 from pydantic import BaseModel
-from typing import List, Optional
 
 
 class FeedCreate(BaseModel):
     url: str
-    tags: List[str] = []
+    tags: list[str] = []
 
 
 class FeedResponse(BaseModel):
     id: int
     url: str
-    title: Optional[str] = None
+    title: str | None = None
     is_active: bool
-    tags: List[str] = []
+    tags: list[str] = []
 
     model_config = {"from_attributes": True}
