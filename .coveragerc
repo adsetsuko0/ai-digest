@@ -1,0 +1,9 @@
+[run]
+source = app
+# SQLAlchemy async работает через greenlet: без этой строки coverage не видит
+# строки, которые выполняются после await, и занижает процент
+concurrency = greenlet,thread
+
+[report]
+show_missing = True
+fail_under = 80
