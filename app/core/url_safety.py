@@ -14,7 +14,8 @@ def validate_feed_url(url: str) -> str:
     parts = urlsplit(url.strip())
     if parts.scheme not in {"http", "https"}:
         raise ValueError("Only http and https URLs are allowed")
-    host = parts.hostname
+    # "localhost." и "example.com." это те же самые имена, только с точкой на конце
+    host = (parts.hostname or "").rstrip(".")
     if not host:
         raise ValueError("URL must contain a host")
     if parts.username or parts.password:
@@ -22,7 +23,13 @@ def validate_feed_url(url: str) -> str:
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
-        if "." not in host or host.endswith(BLOCKED_SUFFIXES):
+        last_label = host.rsplit(".", 1)[-1]
+        if (
+            "." not in host
+            or host.endswith(BLOCKED_SUFFIXES)
+            or last_label.isdigit()  # сокращённые и восьмеричные IPv4: 127.1, 0177.0.0.1
+            or last_label.startswith("0x")  # шестнадцатеричные: 0x7f.1
+        ):
             raise ValueError("Host is not allowed") from None
         netloc = host.lower()
     else:
