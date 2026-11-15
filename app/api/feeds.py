@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_current_user
@@ -17,53 +18,53 @@ async def create_feed(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    user_id = current_user.id  # read it before any rollback expires the object
+
     result = await db.execute(select(Feed).where(Feed.url == data.url))
     feed = result.scalar_one_or_none()
-
-    if not feed:
+    if feed is None:
         feed = Feed(url=data.url)
         db.add(feed)
-        await db.flush()
+        try:
+            await db.flush()
+        except IntegrityError:  # another request created it first
+            await db.rollback()
+            result = await db.execute(select(Feed).where(Feed.url == data.url))
+            feed = result.scalar_one()
 
-    result = await db.execute(
-        select(UserFeed).where(
-            UserFeed.user_id == current_user.id, UserFeed.feed_id == feed.id
-        )
-    )
-    existing = result.scalar_one_or_none()
-
-    if existing:
+    db.add(UserFeed(user_id=user_id, feed_id=feed.id, tags=data.tags))
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Feed already added"
-        )
-
-    user_feed = UserFeed(user_id=current_user.id, feed_id=feed.id, tags=data.tags)
-
-    db.add(user_feed)
-    await db.commit()
+            status_code=status.HTTP_409_CONFLICT, detail="Feed already added"
+        ) from None
     await db.refresh(feed)
-
-    feed_response = FeedResponse(
+    return FeedResponse(
         id=feed.id,
         url=feed.url,
         title=feed.title,
         is_active=feed.is_active,
         tags=data.tags,
     )
-    return feed_response
 
 
 @router.get("", response_model=list[FeedResponse])
 async def get_feeds(
-    db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     result = await db.execute(
         select(Feed, UserFeed)
         .join(UserFeed, UserFeed.feed_id == Feed.id)
         .where(UserFeed.user_id == current_user.id)
+        .order_by(UserFeed.id)
+        .limit(limit)
+        .offset(offset)
     )
-    rows = result.all()
-
     return [
         FeedResponse(
             id=feed.id,
@@ -72,7 +73,7 @@ async def get_feeds(
             is_active=feed.is_active,
             tags=user_feed.tags or [],
         )
-        for feed, user_feed in rows
+        for feed, user_feed in result.all()
     ]
 
 

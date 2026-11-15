@@ -15,7 +15,7 @@ async def get_me(current_user: User = Depends(get_current_user)):
 
 
 @router.patch("/me/settings", response_model=UserResponse)
-async def update_setttings(
+async def update_settings(
     data: UserSettingsUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
