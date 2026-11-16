@@ -1,15 +1,15 @@
+import datetime
+
 from sqlalchemy import (
     Boolean,
-    Column,
     DateTime,
     Float,
     ForeignKey,
-    Integer,
     String,
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 
@@ -17,15 +17,17 @@ from app.db.base import Base
 class Article(Base):
     __tablename__ = "articles"
 
-    id = Column(Integer, primary_key=True, index=True)
-    feed_id = Column(Integer, ForeignKey("feeds.id"), nullable=False, index=True)
-    url = Column(String, unique=True, nullable=False)
-    title = Column(String)
-    content = Column(Text)
-    published_at = Column(DateTime(timezone=True))
-    summary = Column(Text)
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    feed_id: Mapped[int] = mapped_column(ForeignKey("feeds.id"), index=True)
+    url: Mapped[str] = mapped_column(String, unique=True)
+    title: Mapped[str | None] = mapped_column(String)
+    content: Mapped[str | None] = mapped_column(Text)
+    published_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    summary: Mapped[str | None] = mapped_column(Text)
 
-    scores = relationship("ArticleScore", back_populates="article")
+    scores: Mapped[list["ArticleScore"]] = relationship(back_populates="article")
 
 
 class ArticleScore(Base):
@@ -34,10 +36,10 @@ class ArticleScore(Base):
         UniqueConstraint("user_id", "article_id", name="uq_user_article"),
     )
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    article_id = Column(Integer, ForeignKey("articles.id"), nullable=False, index=True)
-    score = Column(Float, default=0.0)
-    is_sent = Column(Boolean, default=False)
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    article_id: Mapped[int] = mapped_column(ForeignKey("articles.id"), index=True)
+    score: Mapped[float | None] = mapped_column(Float, default=0.0)
+    is_sent: Mapped[bool | None] = mapped_column(Boolean, default=False)
 
-    article = relationship("Article", back_populates="scores")
+    article: Mapped["Article"] = relationship(back_populates="scores")

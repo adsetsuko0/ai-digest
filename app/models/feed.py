@@ -1,14 +1,7 @@
-from sqlalchemy import (
-    JSON,
-    Boolean,
-    Column,
-    DateTime,
-    ForeignKey,
-    Integer,
-    String,
-    UniqueConstraint,
-)
-from sqlalchemy.orm import relationship
+import datetime
+
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, String, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 
@@ -16,22 +9,24 @@ from app.db.base import Base
 class Feed(Base):
     __tablename__ = "feeds"
 
-    id = Column(Integer, primary_key=True, index=True)
-    url = Column(String, unique=True, nullable=False)
-    title = Column(String)
-    last_fetched_at = Column(DateTime(timezone=True))
-    is_active = Column(Boolean, default=True)
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    url: Mapped[str] = mapped_column(String, unique=True)
+    title: Mapped[str | None] = mapped_column(String)
+    last_fetched_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    is_active: Mapped[bool | None] = mapped_column(Boolean, default=True)
 
-    user_feeds = relationship("UserFeed", back_populates="feed")
+    user_feeds: Mapped[list["UserFeed"]] = relationship(back_populates="feed")
 
 
 class UserFeed(Base):
     __tablename__ = "user_feeds"
     __table_args__ = (UniqueConstraint("user_id", "feed_id", name="uq_user_feed"),)
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    feed_id = Column(Integer, ForeignKey("feeds.id"), nullable=False, index=True)
-    tags = Column(JSON, default=list)
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    feed_id: Mapped[int] = mapped_column(ForeignKey("feeds.id"), index=True)
+    tags: Mapped[list[str] | None] = mapped_column(JSON, default=list)
 
-    feed = relationship("Feed", back_populates="user_feeds")
+    feed: Mapped["Feed"] = relationship(back_populates="user_feeds")
