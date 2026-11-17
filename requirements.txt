@@ -11,3 +11,4 @@ bcrypt==5.0.0
 slowapi==0.1.10
 redis==8.1.0
 tzdata==2026.6
+celery==5.7.0

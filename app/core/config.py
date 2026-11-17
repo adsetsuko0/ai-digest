@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     RATE_LIMIT_ENABLED: bool = True
     RATE_LIMIT_STORAGE_URI: str = "memory://"
+    CELERY_BROKER_URL: str = "amqp://guest:guest@localhost:5672//"
+    FETCH_INTERVAL_SECONDS: int = Field(default=1800, ge=60)
 
 
 settings = Settings()

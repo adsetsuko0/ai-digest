@@ -1,3 +1,10 @@
+x-app-environment: &app-environment
+  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-digest_user}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-digest_db}
+  DATABASE_SYNC_URL: postgresql+psycopg2://${POSTGRES_USER:-digest_user}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-digest_db}
+  REDIS_URL: redis://redis:6379/0
+  RATE_LIMIT_STORAGE_URI: redis://redis:6379/1
+  CELERY_BROKER_URL: amqp://${RABBITMQ_USER:-digest}:${RABBITMQ_PASSWORD}@rabbitmq:5672//
+
 services:
   db:
     image: pgvector/pgvector:pg16
@@ -21,14 +28,23 @@ services:
       timeout: 3s
       retries: 10
 
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-digest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
   app:
     build: .
     env_file: .env
-    environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-digest_user}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-digest_db}
-      DATABASE_SYNC_URL: postgresql+psycopg2://${POSTGRES_USER:-digest_user}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-digest_db}
-      REDIS_URL: redis://redis:6379/0
-      RATE_LIMIT_STORAGE_URI: redis://redis:6379/1
+    environment: *app-environment
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:
@@ -37,6 +53,28 @@ services:
       redis:
         condition: service_healthy
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+  worker:
+    build: .
+    env_file: .env
+    environment: *app-environment
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: celery -A app.worker.celery_app:celery_app worker --loglevel=INFO --concurrency=2
+
+  beat:
+    build: .
+    env_file: .env
+    environment: *app-environment
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    command: celery -A app.worker.celery_app:celery_app beat --loglevel=INFO --schedule /tmp/celerybeat-schedule
 
 volumes:
   postgres_data:
