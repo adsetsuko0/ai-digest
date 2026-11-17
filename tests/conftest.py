@@ -96,3 +96,8 @@ def sync_session():
     with Session(sync_engine, expire_on_commit=False) as session:
         yield session
     sync_engine.dispose()
+
+
+@pytest.fixture(autouse=True)
+def no_celery_dispatch(monkeypatch):
+    monkeypatch.setattr("app.api.feeds.fetch_feed.delay", lambda *a, **kw: None)

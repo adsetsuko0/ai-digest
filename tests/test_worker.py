@@ -5,7 +5,7 @@ from sqlalchemy.pool import StaticPool
 import app.worker.tasks as tasks
 from app.db import sync
 from app.db.base import Base
-from app.models import Feed
+from app.models import Feed, User, UserFeed
 from app.worker.celery_app import celery_app
 
 
@@ -19,20 +19,35 @@ def test_celery_is_configured_for_safe_retries():
     assert celery_app.conf.beat_schedule["fetch-all-feeds"]["schedule"] == 1800
 
 
-def test_fetch_all_feeds_counts_only_active_feeds(monkeypatch):
+def test_fetch_all_feeds_schedules_only_active_subscribed_feeds(monkeypatch):
     engine = create_engine(
         "sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False}
     )
     Base.metadata.create_all(engine)
     factory = sessionmaker(engine, expire_on_commit=False)
     with factory() as session:
+        user = User(email="a@example.com", hashed_password="x")
+        active = Feed(url="https://a.example.com/rss", is_active=True)
+        inactive = Feed(url="https://b.example.com/rss", is_active=False)
+        orphan = Feed(url="https://c.example.com/rss", is_active=True)  # no subscribers
+        session.add_all([user, active, inactive, orphan])
+        session.flush()
         session.add_all(
             [
-                Feed(url="https://a.example.com/rss", is_active=True),
-                Feed(url="https://b.example.com/rss", is_active=False),
+                UserFeed(user_id=user.id, feed_id=active.id),
+                UserFeed(user_id=user.id, feed_id=inactive.id),
             ]
         )
         session.commit()
+        active_id = active.id
     monkeypatch.setattr(sync, "get_session_factory", lambda: factory)
+    scheduled = []
+    monkeypatch.setattr(
+        tasks.fetch_feed,
+        "apply_async",
+        lambda args, countdown: scheduled.append((args, countdown)),
+    )
 
     assert tasks.fetch_all_feeds() == 1
+    assert scheduled[0][0] == [active_id]
+    assert 0 <= scheduled[0][1] <= 60

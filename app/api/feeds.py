@@ -1,3 +1,4 @@
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -8,8 +9,12 @@ from app.db.database import get_db
 from app.models.feed import Feed, UserFeed
 from app.models.user import User
 from app.schemas.feed import FeedCreate, FeedResponse
+from app.worker.tasks import fetch_feed
 
 router = APIRouter(prefix="/feeds", tags=["feeds"])
+
+
+logger = structlog.get_logger(__name__)
 
 
 @router.post("", response_model=FeedResponse, status_code=201)
@@ -19,11 +24,13 @@ async def create_feed(
     current_user: User = Depends(get_current_user),
 ):
     user_id = current_user.id  # read it before any rollback expires the object
+    created = False
 
     result = await db.execute(select(Feed).where(Feed.url == data.url))
     feed = result.scalar_one_or_none()
     if feed is None:
         feed = Feed(url=data.url)
+        created = True
         db.add(feed)
         try:
             await db.flush()
@@ -41,6 +48,11 @@ async def create_feed(
             status_code=status.HTTP_409_CONFLICT, detail="Feed already added"
         ) from None
     await db.refresh(feed)
+    if created:
+        try:
+            fetch_feed.delay(feed.id)
+        except Exception:
+            logger.exception("fetch_feed_enqueue_failed", feed_id=feed.id)
     return FeedResponse(
         id=feed.id,
         url=feed.url,
