@@ -3,6 +3,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import app.worker.tasks as tasks
+from app.db import sync
 from app.db.base import Base
 from app.models import Feed
 from app.worker.celery_app import celery_app
@@ -32,6 +33,6 @@ def test_fetch_all_feeds_counts_only_active_feeds(monkeypatch):
             ]
         )
         session.commit()
-    monkeypatch.setattr(tasks, "get_session_factory", lambda: factory)
+    monkeypatch.setattr(sync, "get_session_factory", lambda: factory)
 
     assert tasks.fetch_all_feeds() == 1

@@ -1,6 +1,8 @@
 from celery import Celery
+from celery.signals import worker_process_init
 
 from app.core.config import settings
+from app.core.logging import configure_logging
 
 celery_app = Celery(
     "digest", broker=settings.CELERY_BROKER_URL, include=["app.worker.tasks"]
@@ -20,3 +22,8 @@ celery_app.conf.update(
         },
     },
 )
+
+
+@worker_process_init.connect
+def _setup_logging(**kwargs) -> None:
+    configure_logging()

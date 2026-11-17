@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     RATE_LIMIT_STORAGE_URI: str = "memory://"
     CELERY_BROKER_URL: str = "amqp://guest:guest@localhost:5672//"
     FETCH_INTERVAL_SECONDS: int = Field(default=1800, ge=60)
+    FEED_MAX_CONSECUTIVE_ERRORS: int = Field(default=5, ge=1)
+    LOG_JSON: bool = False
 
 
 settings = Settings()
