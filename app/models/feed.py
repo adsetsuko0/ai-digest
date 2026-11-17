@@ -1,6 +1,15 @@
 import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, String, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -18,6 +27,10 @@ class Feed(Base):
     is_active: Mapped[bool | None] = mapped_column(Boolean, default=True)
 
     user_feeds: Mapped[list["UserFeed"]] = relationship(back_populates="feed")
+    etag: Mapped[str | None] = mapped_column(String)
+    last_modified: Mapped[str | None] = mapped_column(String)
+    consecutive_errors: Mapped[int] = mapped_column(default=0, server_default=text("0"))
+    last_error: Mapped[str | None] = mapped_column(Text)
 
 
 class UserFeed(Base):
