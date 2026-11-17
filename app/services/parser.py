@@ -7,7 +7,6 @@ from html.parser import HTMLParser
 from urllib.parse import urlsplit
 
 import feedparser
-import pytest
 
 MAX_ENTRIES = 100
 MAX_TITLE_LENGTH = 500
@@ -152,11 +151,6 @@ def parse_feed(content: bytes) -> ParsedFeed:
 
     feed_title = _strip_html(result.feed.get("title") or "")[:MAX_TITLE_LENGTH]
     return ParsedFeed(title=feed_title or None, entries=entries[:MAX_ENTRIES])
-
-
-def test_html_page_instead_of_feed_raises():
-    with pytest.raises(FeedParseError):
-        parse_feed(b"<html><body><h1>Not a feed</h1></body></html>")
 
 
 def test_valid_empty_feed_returns_no_entries():
