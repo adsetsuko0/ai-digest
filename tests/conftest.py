@@ -2,7 +2,9 @@ import bcrypt
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app.db.base import Base
@@ -81,3 +83,16 @@ async def alice(client):
 @pytest_asyncio.fixture
 async def bob(client):
     return await register_and_login(client, "bob@example.com")
+
+
+@pytest.fixture
+def sync_session():
+    sync_engine = create_engine(
+        "sqlite://",
+        poolclass=StaticPool,
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(sync_engine)
+    with Session(sync_engine, expire_on_commit=False) as session:
+        yield session
+    sync_engine.dispose()
