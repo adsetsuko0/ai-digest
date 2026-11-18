@@ -302,3 +302,21 @@ def test_dns_failure_is_a_temporary_error(monkeypatch):
 
     with pytest.raises(UpstreamError):
         resolve_host_ips("no-such-host.example")
+
+
+def test_unencodable_hostname_is_unsafe(monkeypatch):
+    def boom(*args, **kwargs):
+        raise UnicodeError("label too long")
+
+    monkeypatch.setattr(fetcher.socket, "getaddrinfo", boom)
+    with pytest.raises(UnsafeURLError):
+        resolve_host_ips("example.com")
+
+
+def test_invalid_url_error_from_httpx_is_wrapped(monkeypatch):
+    def boom(self, *args, **kwargs):
+        raise httpx.InvalidURL("bad url")
+
+    monkeypatch.setattr(httpx.Client, "stream", boom)
+    with pytest.raises(UnsafeURLError):
+        fetch_feed_content(FEED_URL)

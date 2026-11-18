@@ -65,6 +65,8 @@ def resolve_host_ips(host: str) -> list[IPAddress]:
         infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
     except socket.gaierror as exc:
         raise UpstreamError(f"DNS lookup failed for {host}") from exc
+    except UnicodeError as exc:  # e.g. a label longer than 63 characters
+        raise UnsafeURLError("Invalid host name") from exc
     # drop duplicates and the IPv6 zone id ("fe80::1%eth0")
     addresses = dict.fromkeys(str(info[4][0]).split("%")[0] for info in infos)
     return [ipaddress.ip_address(address) for address in addresses]
@@ -143,6 +145,8 @@ def _download(
                 location = response.headers.get("Location")
                 if not location:
                     raise ClientHTTPError(f"HTTP {status} without Location header")
+        except httpx.InvalidURL as exc:
+            raise UnsafeURLError("Invalid URL") from exc
         except httpx.DecodingError as exc:
             raise ClientHTTPError("Response body could not be decoded") from exc
         except httpx.HTTPError as exc:

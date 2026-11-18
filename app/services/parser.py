@@ -65,12 +65,15 @@ def _normalize_spaces(text: str) -> str:
 
 def _strip_html(raw: str) -> str:
     extractor = _TextExtractor()
-    extractor.feed(raw)
+    extractor.feed(raw.replace("\x00", ""))
     extractor.close()
     return _normalize_spaces(extractor.get_text())
 
 
 def _is_http_url(url: str) -> bool:
+    MAX_URL_LENGTH = 2048
+    if len(url) > MAX_URL_LENGTH:
+        return False
     try:
         parts = urlsplit(url)
     except ValueError:

@@ -70,6 +70,7 @@ def fetch_feed(self, feed_id: int) -> dict:
     log = log.bind(url=url)
 
     # 2) download and parse, no DB connection is held meanwhile
+    # 2) download and parse, no DB connection is held meanwhile
     try:
         result = fetch_feed_content(url, etag, last_modified)
         parsed = None if result.not_modified else parse_feed(result.content)
@@ -87,6 +88,12 @@ def fetch_feed(self, feed_id: int) -> dict:
                 exc=exc, countdown=retry_delay(self.request.retries)
             ) from exc
         # permanent error, or a temporary one that did not go away after all retries
+        _record_failure(feed_id, exc, log, started)
+        return {"status": "failed"}
+    except (
+        Exception
+    ) as exc:  # last line of defense: a broken feed must not loop forever
+        log.exception("fetch_feed_unexpected_error")
         _record_failure(feed_id, exc, log, started)
         return {"status": "failed"}
 

@@ -6,6 +6,7 @@ from app.services.parser import (
     FeedParseError,
     _is_http_url,
     _parse_raw_date,
+    _strip_html,
     parse_feed,
 )
 
@@ -162,3 +163,11 @@ def test_parse_raw_date(raw, expected):
 def test_is_http_url_rejects_malformed():
     assert _is_http_url("http://[broken") is False
     assert _is_http_url("https://example.com") is True
+
+
+def test_too_long_url_is_skipped():
+    assert _is_http_url("https://example.com/" + "a" * 3000) is False
+
+
+def test_nul_characters_are_removed():
+    assert _strip_html("a\x00b") == "ab"

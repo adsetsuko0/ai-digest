@@ -10,6 +10,8 @@ from app.core.config import settings
 
 @lru_cache
 def get_session_factory() -> sessionmaker[Session]:
+    if not settings.DATABASE_SYNC_URL:
+        raise RuntimeError("DATABASE_SYNC_URL is not set")
     # created on first use, not at import: the API never needs the sync engine
     engine = create_engine(settings.DATABASE_SYNC_URL, pool_pre_ping=True)
     return sessionmaker(engine, expire_on_commit=False)
