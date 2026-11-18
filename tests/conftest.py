@@ -4,9 +4,10 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.db import sync
 from app.db.base import Base
 from app.db.database import get_db
 from app.main import app
@@ -86,16 +87,28 @@ async def bob(client):
 
 
 @pytest.fixture
-def sync_session():
+def sync_factory():
     sync_engine = create_engine(
         "sqlite://",
         poolclass=StaticPool,
         connect_args={"check_same_thread": False},
     )
     Base.metadata.create_all(sync_engine)
-    with Session(sync_engine, expire_on_commit=False) as session:
-        yield session
+    yield sessionmaker(sync_engine, expire_on_commit=False)
     sync_engine.dispose()
+
+
+@pytest.fixture
+def sync_session(sync_factory):
+    with sync_factory() as session:
+        yield session
+
+
+@pytest.fixture
+def use_sync_db(sync_factory, monkeypatch):
+    """Make session_scope() in the worker code use the test database."""
+    monkeypatch.setattr(sync, "get_session_factory", lambda: sync_factory)
+    return sync_factory
 
 
 @pytest.fixture(autouse=True)

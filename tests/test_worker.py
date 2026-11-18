@@ -1,10 +1,4 @@
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
-
 import app.worker.tasks as tasks
-from app.db import sync
-from app.db.base import Base
 from app.models import Feed, User, UserFeed
 from app.worker.celery_app import celery_app
 
@@ -19,12 +13,14 @@ def test_celery_is_configured_for_safe_retries():
     assert celery_app.conf.beat_schedule["fetch-all-feeds"]["schedule"] == 1800
 
 
-def test_fetch_all_feeds_schedules_only_active_subscribed_feeds(monkeypatch):
-    engine = create_engine(
-        "sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False}
-    )
-    Base.metadata.create_all(engine)
-    factory = sessionmaker(engine, expire_on_commit=False)
+def test_retry_delay_grows():
+    assert [tasks.retry_delay(n) for n in range(3)] == [60, 240, 960]
+
+
+def test_fetch_all_feeds_schedules_only_active_subscribed_feeds(
+    use_sync_db, monkeypatch
+):
+    factory = use_sync_db
     with factory() as session:
         user = User(email="a@example.com", hashed_password="x")
         active = Feed(url="https://a.example.com/rss", is_active=True)
@@ -40,7 +36,6 @@ def test_fetch_all_feeds_schedules_only_active_subscribed_feeds(monkeypatch):
         )
         session.commit()
         active_id = active.id
-    monkeypatch.setattr(sync, "get_session_factory", lambda: factory)
     scheduled = []
     monkeypatch.setattr(
         tasks.fetch_feed,
