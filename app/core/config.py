@@ -1,4 +1,6 @@
-from pydantic import Field
+from typing import Literal
+
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,6 +18,11 @@ class Settings(BaseSettings):
     FETCH_INTERVAL_SECONDS: int = Field(default=1800, ge=60)
     FEED_MAX_CONSECUTIVE_ERRORS: int = Field(default=5, ge=1)
     LOG_JSON: bool = False
+    LLM_PROVIDER: Literal["fake", "openai"] = "fake"
+    LLM_BASE_URL: str = ""
+    LLM_API_KEY: SecretStr = SecretStr("")
+    LLM_MODEL: str = ""
+    LLM_DAILY_TOKEN_BUDGET: int = Field(default=200_000, ge=0)
 
 
 settings = Settings()
