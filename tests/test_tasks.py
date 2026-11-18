@@ -240,3 +240,37 @@ def test_full_pipeline_second_run_adds_nothing(factory, monkeypatch):
         assert tasks.fetch_feed(feed_id) == {"status": "ok", "articles_new": 2}
         assert tasks.fetch_feed(feed_id) == {"status": "ok", "articles_new": 0}
     assert count_articles(factory) == 2
+
+
+def test_new_articles_are_queued_for_summaries(factory, monkeypatch):
+    feed_id = add_feed(factory)
+    stub_fetch(monkeypatch, OK)
+    queued = []
+    monkeypatch.setattr(tasks.summarize_article, "delay", queued.append)
+
+    tasks.fetch_feed(feed_id)
+
+    assert len(queued) == 2
+    with factory() as session:
+        ids = set(session.scalars(select(Article.id)))
+    assert set(queued) == ids
+
+    queued.clear()
+    tasks.fetch_feed(feed_id)  # the same articles again
+    assert queued == []
+
+
+def test_broker_failure_does_not_break_feed_collection(factory, monkeypatch):
+    feed_id = add_feed(factory)
+    stub_fetch(monkeypatch, OK)
+    attempts = []
+
+    def broken_delay(article_id):
+        attempts.append(article_id)
+        raise ConnectionError("broker is down")
+
+    monkeypatch.setattr(tasks.summarize_article, "delay", broken_delay)
+
+    assert tasks.fetch_feed(feed_id) == {"status": "ok", "articles_new": 2}
+    assert len(attempts) == 1  # gave up after the first failure
+    assert count_articles(factory) == 2
