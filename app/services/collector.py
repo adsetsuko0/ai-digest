@@ -73,33 +73,42 @@ def _to_article(feed: Feed, entry: ParsedEntry) -> Article:
     )
 
 
-def store_entries(session: Session, feed: Feed, entries: list[ParsedEntry]) -> int:
-    """Save new articles and return how many were inserted.
+def store_new_articles(
+    session: Session, feed: Feed, entries: list[ParsedEntry]
+) -> list[Article]:
+    """Save new articles and return them (with ids, after flush).
 
     Idempotent: running it twice with the same entries inserts nothing the
     second time. Does not commit, the caller owns the transaction.
     """
     candidates = _drop_existing(session, feed, _dedupe_batch(entries))
     if not candidates:
-        return 0
+        return []
 
     # fast path: the whole batch in one savepoint
     try:
         with session.begin_nested():
-            session.add_all(_to_article(feed, e) for e in candidates)
+            articles = [_to_article(feed, e) for e in candidates]
+            session.add_all(articles)
             session.flush()
-        return len(candidates)
+        return articles
     except IntegrityError:
         pass  # another worker inserted one of the URLs between our check and insert
 
     # slow path: one by one, so a single duplicate does not drop the whole batch
-    inserted = 0
+    inserted: list[Article] = []
     for entry in candidates:
+        article = _to_article(feed, entry)
         try:
             with session.begin_nested():
-                session.add(_to_article(feed, entry))
+                session.add(article)
                 session.flush()
-            inserted += 1
         except IntegrityError:
             continue
+        inserted.append(article)
     return inserted
+
+
+def store_entries(session: Session, feed: Feed, entries: list[ParsedEntry]) -> int:
+    """Like store_new_articles, but returns only how many articles were inserted."""
+    return len(store_new_articles(session, feed, entries))

@@ -4,7 +4,7 @@ from sqlalchemy import func, select
 from app.models.article import Article
 from app.models.feed import Feed
 from app.services import collector
-from app.services.collector import normalize_url, store_entries
+from app.services.collector import normalize_url, store_entries, store_new_articles
 from app.services.parser import ParsedEntry, _content_hash
 
 
@@ -89,3 +89,19 @@ def test_race_falls_back_to_one_by_one(sync_session, feed, monkeypatch):
     ]
     assert store_entries(sync_session, feed, batch) == 1
     assert count_articles(sync_session) == 2
+
+
+def test_store_new_articles_returns_articles_with_ids(sync_session, feed):
+    entries = [
+        make_entry("https://example.com/1", "A", "text a"),
+        make_entry("https://example.com/2", "B", "text b"),
+    ]
+
+    articles = store_new_articles(sync_session, feed, entries)
+
+    assert [a.url for a in articles] == [
+        "https://example.com/1",
+        "https://example.com/2",
+    ]
+    assert all(a.id for a in articles)
+    assert store_new_articles(sync_session, feed, entries) == []
