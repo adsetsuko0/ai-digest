@@ -1,4 +1,5 @@
 import bcrypt
+import fakeredis
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -114,3 +115,13 @@ def use_sync_db(sync_factory, monkeypatch):
 @pytest.fixture(autouse=True)
 def no_celery_dispatch(monkeypatch):
     monkeypatch.setattr("app.api.feeds.fetch_feed.delay", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        "app.worker.tasks.summarize_article.delay", lambda *a, **kw: None
+    )
+
+
+@pytest.fixture
+def fake_redis(monkeypatch):
+    client = fakeredis.FakeRedis(decode_responses=True)
+    monkeypatch.setattr("app.worker.tasks.get_redis", lambda: client)
+    return client
