@@ -14,7 +14,7 @@ from app.core.redis import get_cache
 from app.db.database import get_db
 from app.models.user import User
 from app.schemas.digest import DigestPage
-from app.services.digest import InvalidCursor, decode_cursor, get_digest_page
+from app.services.digest import InvalidCursor, as_utc, decode_cursor, get_digest_page
 
 router = APIRouter(tags=["digest"])
 logger = structlog.get_logger(__name__)
@@ -62,6 +62,14 @@ async def get_digest(
         tag = tag.strip().lower()  # tags are stored in this form
         if not tag:
             raise HTTPException(status_code=422, detail="Tag must not be blank")
+
+    if since is not None:
+        try:
+            since = as_utc(since)
+        except OverflowError:
+            raise HTTPException(
+                status_code=422, detail="since is out of range"
+            ) from None
 
     after = None
     if cursor is not None:

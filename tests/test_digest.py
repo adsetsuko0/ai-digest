@@ -1,4 +1,6 @@
+import base64
 import datetime
+import json
 
 import pytest
 import redis
@@ -289,3 +291,27 @@ async def test_digest_works_when_redis_is_down(client, alice, db_session):
     article_id = await add_article(db_session, feed_id, 1, published=at(1))
 
     assert await digest_ids(client, alice) == [article_id]
+
+
+def make_cursor(payload) -> str:
+    return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
+
+
+@pytest.mark.parametrize(
+    "sort_at", ["0001-01-01T00:00:00+05:00", "9999-12-31T23:59:59-05:00"]
+)
+async def test_cursor_with_out_of_range_date_returns_400(client, alice, sort_at):
+    response = await client.get(
+        "/digest", params={"cursor": make_cursor([sort_at, 1])}, headers=alice
+    )
+
+    assert response.status_code == 400
+
+
+@pytest.mark.parametrize(
+    "since", ["0001-01-01T00:00:00+05:00", "9999-12-31T23:59:59-05:00"]
+)
+async def test_since_out_of_range_returns_422(client, alice, since):
+    response = await client.get("/digest", params={"since": since}, headers=alice)
+
+    assert response.status_code == 422

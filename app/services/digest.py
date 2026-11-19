@@ -35,7 +35,7 @@ def decode_cursor(cursor: str) -> tuple[datetime.datetime, int]:
         if isinstance(article_id, bool) or not isinstance(article_id, int):
             raise ValueError("article id must be an integer")
         return as_utc(datetime.datetime.fromisoformat(sort_at)), article_id
-    except (ValueError, TypeError) as exc:
+    except (ValueError, TypeError, OverflowError) as exc:
         raise InvalidCursor("Invalid cursor") from exc
 
 

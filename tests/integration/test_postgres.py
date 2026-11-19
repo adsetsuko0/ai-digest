@@ -122,17 +122,26 @@ async def test_digest_pagination_and_tag_filter_work_on_postgres(pg_client, pg_f
     alice = await register_and_login(pg_client, "alice@example.com")
     news = await subscribe(pg_client, alice, "https://example.com/rss", tags=["news"])
     tech = await subscribe(pg_client, alice, "https://example.org/rss", tags=["tech"])
-    news_ids = [
-        await add_article(pg_factory, news, n, title=f"N{n}", summary="s")
-        for n in (1, 3, 5)
-    ]
-    tech_ids = [
-        await add_article(pg_factory, tech, n, title=f"T{n}", summary="s")
-        for n in (2, 4)
-    ]
+    article_dates = {}
+
+    news_ids = []
+    for n in (1, 3, 5):
+        article_id = await add_article(pg_factory, news, n, title=f"N{n}", summary="s")
+        news_ids.append(article_id)
+        article_dates[article_id] = at(n)
+
+    tech_ids = []
+    for n in (2, 4):
+        article_id = await add_article(pg_factory, tech, n, title=f"T{n}", summary="s")
+        tech_ids.append(article_id)
+        article_dates[article_id] = at(n)
 
     seen, pages = await walk(pg_client, alice, limit=2)
-    assert seen == sorted(news_ids + tech_ids, reverse=True)
+    assert seen == sorted(
+        news_ids + tech_ids,
+        key=lambda article_id: article_dates[article_id],
+        reverse=True,
+    )
     assert pages == 3
 
     response = await pg_client.get("/digest", params={"tag": "news"}, headers=alice)
