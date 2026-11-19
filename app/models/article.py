@@ -1,7 +1,9 @@
 import datetime
 import enum
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
+    JSON,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -11,6 +13,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.core.config import settings
 from app.db.base import Base
 
 
@@ -50,3 +53,7 @@ class Article(Base):
     )
     summary_model: Mapped[str | None] = mapped_column(String(100))
     tokens_used: Mapped[int | None] = mapped_column()
+    embedding: Mapped[list[float] | None] = mapped_column(
+        Vector(settings.EMBEDDING_DIM).with_variant(JSON(), "sqlite"),
+        deferred=True,
+    )

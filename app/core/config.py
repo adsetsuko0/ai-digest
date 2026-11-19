@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     LLM_API_KEY: SecretStr = SecretStr("")
     LLM_MODEL: str = ""
     LLM_DAILY_TOKEN_BUDGET: int = Field(default=200_000, ge=0)
+    EMBEDDING_PROVIDER: Literal["fake", "openai"] = "fake"
+    EMBEDDING_MODEL: str = ""
+    EMBEDDING_DIM: int = Field(default=384, ge=1, le=2000)
 
 
 settings = Settings()
