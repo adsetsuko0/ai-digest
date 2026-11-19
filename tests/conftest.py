@@ -128,6 +128,7 @@ def no_celery_dispatch(monkeypatch):
     monkeypatch.setattr(
         "app.worker.tasks.summarize_article.delay", lambda *a, **kw: None
     )
+    monkeypatch.setattr("app.worker.tasks.embed_article.delay", lambda *a, **kw: None)
 
 
 @pytest.fixture

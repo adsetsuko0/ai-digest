@@ -12,6 +12,7 @@ from app.db.sync import session_scope
 from app.models import Article, Feed, UserFeed
 from app.models.article import SummaryStatus
 from app.services.collector import store_new_articles
+from app.services.embedder import get_embedder
 from app.services.fetcher import FetchError, fetch_feed_content
 from app.services.parser import FeedParseError, parse_feed
 from app.services.summarizer import LLMError, get_summarizer
@@ -163,7 +164,7 @@ def fetch_all_feeds() -> int:
     return len(feed_ids)
 
 
-# --- summaries ------------------------------------------------------------------
+# --- summaries and embeddings -----------------------------------------------------
 
 
 def _article_input(title: str | None, content: str | None) -> str:
@@ -189,10 +190,19 @@ def _fail_article(article_id: int, exc: Exception, log, started: float) -> None:
     )
 
 
+def _enqueue_embedding(article_id: int, log) -> None:
+    try:
+        embed_article.delay(article_id)
+    except Exception:
+        # the article just stays without an embedding (not searchable yet)
+        log.exception("embed_enqueue_failed", article_id=article_id)
+
+
 @celery_app.task(bind=True, max_retries=3, name="app.worker.tasks.summarize_article")
 def summarize_article(self, article_id: int) -> dict:
     started = time.monotonic()
     log = logger.bind(article_id=article_id)
+    cache_hit = False
 
     # 1) read the article, look for a ready summary of the same text
     with session_scope() as session:
@@ -230,14 +240,19 @@ def summarize_article(self, article_id: int) -> dict:
             article.summary_model = cached.summary_model
             article.tokens_used = 0
             article.summary_status = SummaryStatus.DONE.value
-            log.info(
-                "summarize_article",
-                status="done",
-                cache_hit=True,
-                tokens=0,
-                duration_ms=_ms(started),
-            )
-            return {"status": "done", "cache_hit": True}
+            cache_hit = True
+
+    if cache_hit:
+        # after the commit: the embedding task must see the finished summary
+        _enqueue_embedding(article_id, log)
+        log.info(
+            "summarize_article",
+            status="done",
+            cache_hit=True,
+            tokens=0,
+            duration_ms=_ms(started),
+        )
+        return {"status": "done", "cache_hit": True}
 
     summarizer = get_summarizer()  # a configuration error is raised, not swallowed
     redis_client = get_redis()
@@ -290,6 +305,7 @@ def summarize_article(self, article_id: int) -> dict:
             article.tokens_used = result.tokens
             article.summary_status = SummaryStatus.DONE.value
 
+    _enqueue_embedding(article_id, log)
     log.info(
         "summarize_article",
         status="done",
@@ -299,3 +315,60 @@ def summarize_article(self, article_id: int) -> dict:
         duration_ms=_ms(started),
     )
     return {"status": "done", "cache_hit": False, "tokens": result.tokens}
+
+
+@celery_app.task(bind=True, max_retries=3, name="app.worker.tasks.embed_article")
+def embed_article(self, article_id: int) -> dict:
+    started = time.monotonic()
+    log = logger.bind(article_id=article_id)
+
+    # 1) read the finished summary
+    with session_scope() as session:
+        article = session.get(Article, article_id)
+        if (
+            article is None
+            or article.summary_status != SummaryStatus.DONE
+            or not article.summary
+        ):
+            log.info("embed_article", status="skipped", duration_ms=_ms(started))
+            return {"status": "skipped"}
+        text = _article_input(article.title, article.summary)
+
+    embedder = get_embedder()  # a configuration error is raised, not swallowed
+
+    # 2) compute the vector, no DB connection is held meanwhile
+    try:
+        vector = embedder.embed(text)
+    except LLMError as exc:
+        if exc.retryable and self.request.retries < self.max_retries:
+            log.warning(
+                "embed_article",
+                status="retry",
+                error=f"{type(exc).__name__}: {exc}"[:MAX_ERROR_LENGTH],
+                attempt=self.request.retries + 1,
+                duration_ms=_ms(started),
+            )
+            raise self.retry(
+                exc=exc, countdown=retry_delay(self.request.retries)
+            ) from exc
+        log.warning(
+            "embed_article",
+            status="failed",
+            error=f"{type(exc).__name__}: {exc}"[:MAX_ERROR_LENGTH],
+            duration_ms=_ms(started),
+        )
+        return {"status": "failed"}
+    except Exception:
+        log.exception("embed_article_unexpected_error")
+        return {"status": "failed"}
+
+    # 3) save it
+    with session_scope() as session:
+        article = session.get(Article, article_id)
+        if article is not None:
+            article.embedding = vector
+
+    log.info(
+        "embed_article", status="done", model=embedder.model, duration_ms=_ms(started)
+    )
+    return {"status": "done"}

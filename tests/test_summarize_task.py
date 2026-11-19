@@ -259,3 +259,56 @@ def test_configuration_error_is_raised_and_the_article_stays_pending(
         tasks.summarize_article(article_id)
 
     assert load_article(factory, article_id).summary_status == "pending"
+
+
+def test_embedding_is_queued_after_a_summary(factory, stub, fake_redis, monkeypatch):
+    queued = []
+    monkeypatch.setattr(tasks.embed_article, "delay", queued.append)
+    article_id = add_article(factory)
+
+    tasks.summarize_article(article_id)
+
+    assert queued == [article_id]
+
+
+def test_embedding_is_queued_after_a_cache_hit(factory, stub, fake_redis, monkeypatch):
+    queued = []
+    monkeypatch.setattr(tasks.embed_article, "delay", queued.append)
+    add_article(
+        factory,
+        url="https://example.com/old",
+        content_hash="same-hash",
+        summary="Cached summary.",
+        summary_model="old-model",
+        summary_status="done",
+    )
+    article_id = add_article(
+        factory, url="https://example.com/new", content_hash="same-hash"
+    )
+
+    tasks.summarize_article(article_id)
+
+    assert queued == [article_id]
+
+
+def test_no_embedding_without_a_summary(factory, stub, fake_redis, monkeypatch):
+    queued = []
+    monkeypatch.setattr(tasks.embed_article, "delay", queued.append)
+    stub.error = LLMPermanentError("HTTP 401")
+
+    tasks.summarize_article(add_article(factory))
+
+    assert queued == []
+
+
+def test_embedding_enqueue_failure_does_not_lose_the_summary(
+    factory, stub, fake_redis, monkeypatch
+):
+    def broken_delay(article_id):
+        raise ConnectionError("broker is down")
+
+    monkeypatch.setattr(tasks.embed_article, "delay", broken_delay)
+    article_id = add_article(factory)
+
+    assert tasks.summarize_article(article_id)["status"] == "done"
+    assert load_article(factory, article_id).summary == "Short summary."
