@@ -35,3 +35,30 @@ async def test_register_is_limited_to_10_per_hour(client, rate_limit_on):
 
     assert statuses[:10] == [201] * 10
     assert statuses[10] == 429
+
+
+async def test_digest_is_limited_to_60_per_minute(client, alice, rate_limit_on):
+    statuses = [
+        (await client.get("/digest", headers=alice)).status_code for _ in range(61)
+    ]
+
+    assert statuses[:60] == [200] * 60
+    assert statuses[60] == 429
+
+
+async def test_search_is_limited_to_30_per_minute(
+    client, alice, rate_limit_on, monkeypatch
+):
+    async def no_results(*args, **kwargs):
+        return []
+
+    # the vector query only works on PostgreSQL, the limit does not care
+    monkeypatch.setattr("app.api.search.search_articles", no_results)
+
+    statuses = [
+        (await client.get("/search", params={"q": "python"}, headers=alice)).status_code
+        for _ in range(31)
+    ]
+
+    assert statuses[:30] == [200] * 30
+    assert statuses[30] == 429

@@ -134,6 +134,8 @@ async def test_shared_feed_shows_each_users_own_tags(client, alice, bob, db_sess
 
     assert alice_item["tags"] == ["news"]
     assert bob_item["tags"] == ["work"]
+    assert await digest_ids(client, bob, tag="news") == []
+    assert await digest_ids(client, bob, tag="work") != []
 
 
 async def test_unsubscribed_feed_disappears_from_the_digest(client, alice, db_session):
@@ -315,3 +317,34 @@ async def test_since_out_of_range_returns_422(client, alice, since):
     response = await client.get("/digest", params={"since": since}, headers=alice)
 
     assert response.status_code == 422
+
+
+async def test_new_article_between_pages_does_not_shift_the_next_page(
+    client, alice, db_session
+):
+    feed_id = await subscribe(client, alice)
+    for n in range(1, 7):
+        await add_article(db_session, feed_id, n, published=at(n))
+    first = (await client.get("/digest", params={"limit": 3}, headers=alice)).json()
+
+    await add_article(db_session, feed_id, 100, published=at(100))  # newest of all
+    second = (
+        await client.get(
+            "/digest",
+            params={"limit": 3, "cursor": first["next_cursor"]},
+            headers=alice,
+        )
+    ).json()
+
+    first_ids = [i["id"] for i in first["items"]]
+    second_ids = [i["id"] for i in second["items"]]
+    assert not set(first_ids) & set(second_ids)
+    assert len(second_ids) == 3
+    assert second["next_cursor"] is None
+
+
+async def test_underscore_in_a_tag_is_not_a_wildcard(client, alice, db_session):
+    feed_id = await subscribe(client, alice, tags=["axb"])
+    await add_article(db_session, feed_id, 1, published=at(1))
+
+    assert await digest_ids(client, alice, tag="a_b") == []
