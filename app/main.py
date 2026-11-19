@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.auth import router as auth_router
 from app.api.digest import router as digest_router
 from app.api.feeds import router as feeds_router
+from app.api.search import router as search_router
 from app.api.users import router as users_router
 from app.core.rate_limit import limiter
 from app.db.database import get_db
@@ -24,6 +25,7 @@ app.include_router(auth_router)
 app.include_router(users_router)
 app.include_router(feeds_router)
 app.include_router(digest_router)
+app.include_router(search_router)
 
 
 @app.get("/health")
