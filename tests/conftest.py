@@ -1,5 +1,6 @@
 import bcrypt
 import fakeredis
+import fakeredis.aioredis
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -8,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.core.redis import get_cache
 from app.db import sync
 from app.db.base import Base
 from app.db.database import get_db
@@ -51,8 +53,16 @@ async def setup_db():
 
 
 @pytest_asyncio.fixture
-async def client():
+async def cache():
+    client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    yield client
+    await client.aclose()
+
+
+@pytest_asyncio.fixture
+async def client(cache):
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_cache] = lambda: cache
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as ac:

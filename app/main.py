@@ -6,6 +6,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth import router as auth_router
+from app.api.digest import router as digest_router
 from app.api.feeds import router as feeds_router
 from app.api.users import router as users_router
 from app.core.rate_limit import limiter
@@ -22,6 +23,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.include_router(auth_router)
 app.include_router(users_router)
 app.include_router(feeds_router)
+app.include_router(digest_router)
 
 
 @app.get("/health")
