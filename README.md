@@ -2,38 +2,31 @@
 
 [![CI](https://github.com/adsetsuko0/ai-digest/actions/workflows/ci.yml/badge.svg)](https://github.com/adsetsuko0/ai-digest/actions/workflows/ci.yml)
 
-Backend service for a personal news digest: users register, subscribe to RSS feeds with tags, the service collects new articles in the background and (in progress) will send short LLM summaries of them.
+Backend service for a personal news digest: users register, subscribe to RSS feeds with tags, the service collects new articles in the background, writes a short LLM summary of each one, and serves them back as a digest and through semantic search.
 
-> **Status: work in progress.** Accounts, feeds and background article collection are finished and tested. Summaries and the digest endpoint are planned, see the roadmap below. Collected articles are stored in the database, but there is no API to read them yet.
+> **Status: work in progress.** The whole pipeline works end to end: accounts, feeds, background collection, summaries, `GET /digest` and `GET /search`. A fake summarizer and a fake embedder let you try everything without an API key. Metrics, deployment and delivery of the digest are still ahead, see the roadmap.
 
 ## Tech stack
 
-**Python 3.12 - FastAPI - Pydantic v2 - SQLAlchemy 2 (async API, sync worker) - Alembic - PostgreSQL 16 (pgvector image) - Redis - Celery + RabbitMQ - httpx - feedparser - structlog - Docker Compose - pytest - respx - ruff - pre-commit - GitHub Actions**
+**Python 3.12 - FastAPI - Pydantic v2 - SQLAlchemy 2 (async API, sync worker) - Alembic - PostgreSQL 16 with pgvector - Redis - Celery + RabbitMQ - httpx - feedparser - structlog - Docker Compose - pytest - respx - ruff - pre-commit - GitHub Actions**
 
 ## What works today
 
 - **Auth:** registration and login with JWT access tokens. The token carries the user id, passwords are hashed with bcrypt, and login runs a dummy hash for unknown emails so response time does not reveal which accounts exist.
-- **Rate limits:** 10 registrations per hour and 10 logins per minute per IP, stored in Redis under Docker Compose.
-- **Feeds:** add, list (limit/offset pagination) and delete RSS feeds with tags. Feed URLs are validated to block private and internal addresses. Duplicate subscriptions are rejected by a database constraint, so there is no race between two requests.
-- **Article collection:** Celery Beat runs every 30 minutes. Each active feed that has at least one subscriber gets its own task with a random start delay of up to 60 seconds, so sources are not hit all at once. A task downloads the feed safely, parses RSS and Atom, removes duplicates (by normalized URL and by content hash) and stores new articles. Repeating a task never creates duplicates.
+- **Rate limits** per IP, stored in Redis under Docker Compose: 10 registrations per hour, 10 logins per minute, 60 digest requests per minute, 30 searches per minute.
+- **Feeds:** add, list (limit/offset pagination) and delete RSS feeds with tags. Feed URLs are validated to block private and internal addresses. Duplicate subscriptions are rejected by a database constraint. A new feed is fetched right away; if the broker is down, adding the feed still succeeds.
+- **Article collection:** Celery Beat runs every 30 minutes. Each active feed that has at least one subscriber gets its own task with a random start delay of up to 60 seconds. A task downloads the feed safely, parses RSS and Atom, removes duplicates (by normalized URL and by content hash) and stores new articles. Repeating a task never creates duplicates.
 - **Safe feed fetcher:** the host is resolved and every address is checked on each download, redirects are followed manually and re-checked, the response is streamed with a 2 MB limit (which also stops compression bombs), and conditional requests (`ETag`, `Last-Modified`) save traffic.
-- **Error handling:** temporary errors (5xx, 429, timeouts, DNS failures) are retried with growing delays. Permanent errors (404, content that is not a feed, blocked addresses, oversized responses) are counted, the reason is saved in `last_error`, and a feed that fails 5 times in a row is disabled automatically.
-- **Structured logs:** every collection task logs `feed_id`, `url`, `articles_new`, `duration_ms` and `status`. JSON under Docker Compose, readable output locally.
-- **Data isolation:** users cannot see or delete each other's feeds (covered by tests).
-- **User settings:** digest time and timezone.
+- **Error handling:** temporary errors (5xx, 429, timeouts, DNS failures) are retried with growing delays. Permanent errors are counted, the reason is saved in `last_error`, and a feed that fails 5 times in a row is disabled automatically.
+- **Summaries:** every new article gets a 2-3 sentence summary from any OpenAI-compatible API. With `LLM_PROVIDER=fake` a deterministic fake summarizer (the first two sentences) is used, so the demo needs no key.
+- **Spend control:** a daily token budget kept in Redis, a cache of summaries by content hash (the same text is never paid for twice), limits on input and output size, and retries only for temporary errors.
+- **Digest:** `GET /digest` returns summaries of articles from your own feeds, newest first, with filters by tag, feed and date, keyset pagination and a 60 second Redis cache.
+- **Semantic search:** each summarized article gets an embedding stored with pgvector. `GET /search` ranks your own articles by cosine similarity to the query. A fake, word-based embedder works without a key.
+- **Structured logs:** every task logs its outcome (`feed_id`, `article_id`, `status`, `tokens`, `duration_ms`). JSON under Docker Compose, readable output locally.
+- **Data isolation:** users see only their own feeds, digest and search results (covered by tests, including a test on real PostgreSQL).
+- **User settings:** digest time and timezone (stored for the future delivery of the digest).
 - **Health checks:** `/health` and `/health/ready` (checks the database).
-- **Quality:** 200+ tests with an 80% coverage gate (about 97% today), ruff and pre-commit, GitHub Actions CI, containers run as a non-root user.
-
-## Roadmap
-
-Planned, not implemented yet:
-
-- Article summaries through an OpenAI-compatible client, with a fake summarizer so the demo works without an API key.
-- `GET /digest` with filters, pagination and a Redis cache.
-- An endpoint to re-enable a feed that was disabled automatically.
-- Optional semantic search with pgvector.
-- Prometheus and Grafana metrics.
-- Deployment to AWS EC2 with HTTPS.
+- **Quality:** 350+ tests (4 more run against a real PostgreSQL with pgvector), an 80% coverage gate, ruff and pre-commit, GitHub Actions CI, containers run as a non-root user.
 
 ## Quick start (Docker)
 
@@ -51,9 +44,50 @@ Generate a value for each secret with:
 python -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
 
-`docker-compose.override.yml` is applied automatically: it mounts the source code and runs the server with `--reload`. For a production-like run use `docker compose -f docker-compose.yml up -d --build`.
+`docker-compose.override.yml` is applied automatically: it mounts the source code, runs the server with `--reload` and publishes PostgreSQL on `127.0.0.1:5433`. For a production-like run use `docker compose -f docker-compose.yml up -d --build`.
 
-### Collecting articles
+### Try it
+
+Register, add a feed and wait about half a minute for the first summaries:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email":"me@example.com","password":"correct-horse-1"}'
+
+TOKEN=$(curl -s -X POST http://127.0.0.1:8000/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"me@example.com","password":"correct-horse-1"}' \
+  | python -c "import sys, json; print(json.load(sys.stdin)['access_token'])")
+
+curl -s -X POST http://127.0.0.1:8000/feeds \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"url":"https://feeds.bbci.co.uk/news/technology/rss.xml","tags":["tech"]}'
+
+curl -s "http://127.0.0.1:8000/digest?tag=tech&limit=5" -H "Authorization: Bearer $TOKEN"
+curl -s "http://127.0.0.1:8000/search?q=python&limit=5" -H "Authorization: Bearer $TOKEN"
+```
+
+A page of the digest looks like this; pass `next_cursor` as `?cursor=` to get the next page:
+
+```json
+{
+  "items": [
+    {
+      "id": 42,
+      "title": "Article title",
+      "url": "https://example.com/article",
+      "summary": "Two or three sentences.",
+      "feed": {"id": 1, "title": "Feed title"},
+      "published_at": "2026-11-20T09:30:00Z",
+      "tags": ["tech"]
+    }
+  ],
+  "next_cursor": "WyIyMDI2LTExLTIwVDA5OjMwOjAwKzAwOjAwIiwgNDJd"
+}
+```
+
+### Collecting articles by hand
 
 Beat starts collection every 30 minutes on its own. To run it by hand:
 
@@ -62,13 +96,11 @@ docker compose exec worker celery -A app.worker.celery_app call app.worker.tasks
 docker compose logs -f worker
 ```
 
-Tasks start with a random delay of up to 60 seconds, so wait a minute before looking for results. Check the state of your feeds and the number of stored articles with:
+Tasks start with a random delay of up to 60 seconds. Check the state of your articles with:
 
 ```bash
 docker compose exec db psql -U digest_user -d digest_db \
-  -c "select id, url, is_active, consecutive_errors, last_error from feeds"
-docker compose exec db psql -U digest_user -d digest_db \
-  -c "select count(*) from articles"
+  -c "select summary_status, count(*), sum(tokens_used), count(embedding) from articles group by 1"
 ```
 
 The RabbitMQ management UI is available at http://127.0.0.1:15672 (user and password from `.env`). It is bound to `127.0.0.1` only.
@@ -88,6 +120,14 @@ The RabbitMQ management UI is available at http://127.0.0.1:15672 (user and pass
 | `FETCH_INTERVAL_SECONDS` | no | How often Beat starts collection, default `1800` (minimum `60`) |
 | `FEED_MAX_CONSECUTIVE_ERRORS` | no | Permanent errors in a row before a feed is disabled, default `5` |
 | `LOG_JSON` | no | `true` for JSON logs, default `false` (Docker Compose sets `true`) |
+| `LLM_PROVIDER` | no | `fake` (default, no key needed) or `openai` (any OpenAI-compatible API) |
+| `LLM_BASE_URL` | with `openai` | API address without `/chat/completions`, e.g. `https://api.openai.com/v1` |
+| `LLM_API_KEY` | with `openai` | API key, never logged and never put into error messages |
+| `LLM_MODEL` | with `openai` | Model used for summaries |
+| `LLM_DAILY_TOKEN_BUDGET` | no | Tokens per UTC day, default `200000`; at the limit new articles are skipped, `0` blocks everything |
+| `EMBEDDING_PROVIDER` | no | `fake` (default) or `openai` (uses the same `LLM_BASE_URL` and `LLM_API_KEY`) |
+| `EMBEDDING_MODEL` | with `openai` | Embedding model |
+| `EMBEDDING_DIM` | no | Vector size, default `384`; must match the model, see the limitations |
 
 Database, Redis and RabbitMQ URLs are assembled in `docker-compose.yml` from these values. The API uses `DATABASE_URL` (asyncpg), the worker uses `DATABASE_SYNC_URL` (psycopg2).
 
@@ -102,27 +142,9 @@ Database, Redis and RabbitMQ URLs are assembled in `docker-compose.yml` from the
 | POST | `/feeds` | yes | Add a feed with tags |
 | GET | `/feeds?limit=&offset=` | yes | List your feeds |
 | DELETE | `/feeds/{id}` | yes | Remove a feed |
+| GET | `/digest?tag=&feed_id=&since=&limit=&cursor=` | yes | Summaries from your feeds, newest first |
+| GET | `/search?q=&limit=` | yes | Your articles closest to the query |
 | GET | `/health`, `/health/ready` | no | Liveness and readiness |
-
-Example:
-
-```bash
-curl -s -X POST http://127.0.0.1:8000/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"email":"me@example.com","password":"correct-horse-1"}'
-
-TOKEN=$(curl -s -X POST http://127.0.0.1:8000/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"me@example.com","password":"correct-horse-1"}' \
-  | python -c "import sys, json; print(json.load(sys.stdin)['access_token'])")
-
-curl -s -X POST http://127.0.0.1:8000/feeds \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"url":"https://news.ycombinator.com/rss","tags":["news"]}'
-
-curl -s "http://127.0.0.1:8000/feeds?limit=10&offset=0" \
-  -H "Authorization: Bearer $TOKEN"
-```
 
 ## Running the tests
 
@@ -133,39 +155,67 @@ pip install -r requirements-dev.txt
 pytest --cov=app
 ```
 
-The tests use an in-memory SQLite database, so neither Docker nor Postgres is needed. Network access is faked with `respx`, and DNS lookups are replaced in the tests, so nothing goes to the internet.
+The main suite uses an in-memory SQLite database, so neither Docker nor Postgres is needed. Network access is faked with `respx`, and DNS lookups are replaced in the tests, so nothing goes to the internet.
+
+Four integration tests check vector search and pagination on a real PostgreSQL with pgvector. They are skipped by default. Point `TEST_DATABASE_URL` at an empty database whose name ends with `_test` (the tables are dropped), for example with the Compose database:
+
+```bash
+docker compose exec db psql -U digest_user -d postgres -c "CREATE DATABASE digest_test"
+TEST_DATABASE_URL=postgresql+asyncpg://digest_user:<password>@127.0.0.1:5433/digest_test pytest -m integration
+```
 
 ## Project structure
 
 ```
 app/
-  api/        route handlers (auth, users, feeds)
-  core/       settings, JWT and bcrypt, rate limiting, URL validation, logging
+  api/        route handlers (auth, users, feeds, digest, search)
+  core/       settings, JWT and bcrypt, rate limiting, Redis clients, URL validation, logging
   db/         async engine for the API, sync session for the worker
   models/     SQLAlchemy models
   schemas/    Pydantic request and response models
-  services/   feed fetcher, feed parser, article storage
+  services/   feed fetcher and parser, article storage, summarizer, embedder,
+              token budget, digest and search queries
   worker/     Celery app and tasks
 migrations/   Alembic migrations
-tests/        pytest suite
+tests/        pytest suite (tests/integration needs PostgreSQL)
 ```
 
 ## Design decisions
 
 - **JWT stores the user id, not the email**, so changing an email does not invalidate the identity in a token.
 - **Uniqueness is enforced by the database** (unique constraints), because a "check then insert" in code can be beaten by two simultaneous requests.
-- **Two-stage SSRF protection.** The URL format is checked when a feed is added. The host is resolved and every address is checked again on every download, because DNS records can change after the feed was added. Redirects are followed manually so that each target goes through the same checks, and the response is read as a stream with a size limit instead of being loaded whole.
+- **Two-stage SSRF protection.** The URL format is checked when a feed is added. The host is resolved and every address is checked again on every download, because DNS records can change after the feed was added. Redirects are followed manually so that each target goes through the same checks, and the response is read as a stream with a size limit.
 - **Sync worker, async API.** Celery workers are synchronous, so they use a sync SQLAlchemy engine created lazily on first use. The API stays fully asynchronous. This is why there are two database URLs.
-- **Idempotent tasks.** With `acks_late` a task can run twice, for example when a worker dies in the middle of it: the broker puts the message back in the queue. Storing articles therefore never creates duplicates: article URLs are unique, a content hash catches the same text under another URL, and if two workers race on the same URL the loser falls back to inserting one by one in savepoints. This works the same in SQLite and Postgres, while `ON CONFLICT` would need separate code for each.
-- **Temporary and permanent errors are treated differently.** Retrying a 503 makes sense, retrying a 404 does not. Permanent errors increase a counter and disable the feed after several in a row, so a dead source stops costing resources. A temporary error that survives all retries counts as well.
-- **The database connection is not held during the download.** A task reads the feed, closes the transaction, downloads and parses, and only then opens a new transaction to save the result.
-- **The pgvector Postgres image is used from the start**, so semantic search does not require changing the database image later.
+- **Idempotent tasks.** With `acks_late` a task can run twice, for example when a worker dies in the middle of it. Storing articles never creates duplicates (unique URLs, a content hash for the same text under another URL, savepoints when two workers race). A summary task works only on articles that are still `pending`, so a repeated delivery does nothing.
+- **Temporary and permanent errors are treated differently.** Retrying a 503 makes sense, retrying a 404 does not. Permanent errors increase a counter and disable the feed after several in a row.
+- **Nothing holds a database connection during a network call.** A task reads what it needs, closes the transaction, calls the feed or the LLM, and only then opens a new transaction to save the result. Tasks are enqueued only after the commit, so a worker can always find its article.
+- **Prompt injection is handled in layers.** An article is untrusted text. The system prompt says so and forbids following instructions inside it. The text goes between `<article>` tags with all angle brackets escaped (so it cannot close the tag), control characters are removed and the input is cut to 6000 characters. The model's answer is treated as untrusted too: tags and control characters are stripped, it is collapsed to one paragraph, checked for emptiness and cut to 1000 characters. The model has no tools, so the worst a successful injection can do is produce a wrong summary. The API key never appears in logs or errors (only the HTTP status is kept), and redirects are not followed, so the key cannot be sent to another host.
+- **Spend control has several lines of defense.** A summary of an already summarized text is copied by content hash and costs 0 tokens. A daily budget is kept in a Redis counter (`llm:tokens:<UTC date>`, expires after two days); at the limit articles are marked `skipped`. If Redis is down, the task is retried instead of working without a budget. If only the accounting fails after the money was spent, the summary is kept.
+- **Keyset pagination instead of offset.** The digest is ordered by `coalesce(published_at, fetched_at)` and `id`, and the cursor holds the position of the last item. New articles that arrive between two requests do not shift the next page or repeat items, and the database never counts past skipped rows. Many feeds give no date, which is why the collection time is the fallback.
+- **Redis has a narrow role:** it caches digest pages (60 seconds, the user id is part of the key), stores rate limit counters and the daily token counter. It is not a queue: RabbitMQ is the broker.
+- **The cache and Redis are optional for correctness.** If Redis is down, `/digest` reads from the database.
+- **The pgvector Postgres image is used from the start**, so semantic search did not require changing the database image later.
 
 ## Known limitations
 
 - **DNS rebinding.** The host name is resolved once for the safety check and once more when the connection is made. A DNS server that changes its answer in between could slip a private address past the check. The full fix is to connect directly to the verified IP address. Until then, an egress firewall that blocks private ranges for the worker closes the gap.
+- **`skipped` and `failed` are final statuses.** An article skipped because the daily budget ran out is not summarized again the next day, and an article whose summary failed permanently is not retried.
+- **Fake embeddings are not semantic.** The fake embedder compares words, so "car" and "automobile" are unrelated for it. Real meaning needs `EMBEDDING_PROVIDER=openai`.
+- **Changing `EMBEDDING_DIM` needs a migration** (the column size is fixed when the migration runs) and re-embedding of all articles.
+- **Rate limits are counted per IP.** Behind a reverse proxy without forwarded headers all users would share one address.
+- **Search has no vector index yet**, so it compares the query with every article of the user (exact, fine at this size). With an approximate index the filter by user would be applied after the index lookup, so a user with few articles could get fewer results than `limit`. A larger deployment needs another approach, for example partitioning or filtered search.
+- **The digest can be up to 60 seconds behind** because of the cache.
 - **A feed disabled automatically stays disabled.** There is no endpoint to re-enable it yet.
-- **Collected articles cannot be read through the API yet.** `GET /digest` is on the roadmap.
+- **The digest is only pulled.** Delivery (Telegram, email) and sending at `digest_time` are not implemented, the setting is stored for later.
+
+## Roadmap
+
+- An endpoint to re-enable a disabled feed.
+- Prometheus and Grafana metrics.
+- Deployment to AWS EC2 with HTTPS.
+- Delivery of the digest at the user's `digest_time`.
+
+Out of scope for now: a web interface, several LLM providers, OPML import, OAuth, email confirmation and password reset, refresh tokens.
 
 ## License
 
