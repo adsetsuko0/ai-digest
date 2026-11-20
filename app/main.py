@@ -1,4 +1,5 @@
 from fastapi import Depends, FastAPI, HTTPException
+from prometheus_fastapi_instrumentator import Instrumentator
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy import text
@@ -20,6 +21,10 @@ app = FastAPI(
 )
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+Instrumentator(excluded_handlers=["/metrics", "/health", "/health/ready"]).instrument(
+    app
+).expose(app, include_in_schema=False)
 
 app.include_router(auth_router)
 app.include_router(users_router)

@@ -10,6 +10,7 @@ from app.core.config import settings
 from app.models import Article, Feed
 from app.services.summarizer import LLMPermanentError, LLMUpstreamError, SummaryResult
 from app.services.token_budget import daily_key
+from tests.helpers import metric_value
 
 
 class StubSummarizer:
@@ -312,3 +313,56 @@ def test_embedding_enqueue_failure_does_not_lose_the_summary(
 
     assert tasks.summarize_article(article_id)["status"] == "done"
     assert load_article(factory, article_id).summary == "Short summary."
+
+
+def test_successful_summary_is_counted(factory, stub, fake_redis):
+    done = metric_value("summaries_total", status="done")
+    tokens = metric_value("llm_tokens_total")
+    calls = metric_value("summary_latency_seconds_count")
+    article_id = add_article(factory)
+
+    tasks.summarize_article(article_id)
+
+    assert metric_value("summaries_total", status="done") == done + 1
+    assert metric_value("llm_tokens_total") == tokens + 40
+    assert metric_value("summary_latency_seconds_count") == calls + 1
+
+
+def test_cache_hit_is_counted_and_costs_no_tokens(factory, stub, fake_redis):
+    hits = metric_value("summaries_total", status="cache_hit")
+    tokens = metric_value("llm_tokens_total")
+    add_article(
+        factory,
+        url="https://example.com/old",
+        content_hash="same-hash",
+        summary="Cached summary.",
+        summary_model="old-model",
+        summary_status="done",
+    )
+    article_id = add_article(
+        factory, url="https://example.com/new", content_hash="same-hash"
+    )
+
+    tasks.summarize_article(article_id)
+
+    assert metric_value("summaries_total", status="cache_hit") == hits + 1
+    assert metric_value("llm_tokens_total") == tokens
+
+
+def test_skipped_summary_is_counted(factory, stub, fake_redis, monkeypatch):
+    skipped = metric_value("summaries_total", status="skipped")
+    monkeypatch.setattr(settings, "LLM_DAILY_TOKEN_BUDGET", 100)
+    fake_redis.set(daily_key(), 100)
+
+    tasks.summarize_article(add_article(factory))
+
+    assert metric_value("summaries_total", status="skipped") == skipped + 1
+
+
+def test_failed_summary_is_counted(factory, stub, fake_redis):
+    failed = metric_value("summaries_total", status="failed")
+    stub.error = LLMPermanentError("HTTP 401")
+
+    tasks.summarize_article(add_article(factory))
+
+    assert metric_value("summaries_total", status="failed") == failed + 1

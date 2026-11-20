@@ -7,6 +7,13 @@ import structlog
 from sqlalchemy import exists, select
 
 from app.core.config import settings
+from app.core.metrics import (
+    ARTICLES_FETCHED,
+    FETCH_ERRORS,
+    LLM_TOKENS,
+    SUMMARIES,
+    SUMMARY_LATENCY,
+)
 from app.core.redis import get_redis
 from app.db.sync import session_scope
 from app.models import Article, Feed, UserFeed
@@ -32,6 +39,14 @@ def retry_delay(retries: int) -> int:
 
 def _ms(started: float) -> int:
     return int((time.monotonic() - started) * 1000)
+
+
+def _error_kind(exc: Exception) -> str:
+    if isinstance(exc, FeedParseError):
+        return "parse"
+    if isinstance(exc, FetchError):
+        return "temporary" if exc.retryable else "permanent"
+    return "unexpected"
 
 
 @celery_app.task(name="app.worker.tasks.ping")
@@ -99,6 +114,7 @@ def fetch_feed(self, feed_id: int) -> dict:
         parsed = None if result.not_modified else parse_feed(result.content)
     except (FetchError, FeedParseError) as exc:
         retryable = isinstance(exc, FetchError) and exc.retryable
+        FETCH_ERRORS.labels(kind=_error_kind(exc)).inc()
         if retryable and self.request.retries < self.max_retries:
             log.warning(
                 "fetch_feed",
@@ -117,6 +133,7 @@ def fetch_feed(self, feed_id: int) -> dict:
         Exception
     ) as exc:  # last line of defense: a broken feed must not loop forever
         log.exception("fetch_feed_unexpected_error")
+        FETCH_ERRORS.labels(kind="unexpected").inc()
         _record_failure(feed_id, exc, log, started)
         return {"status": "failed"}
 
@@ -140,6 +157,8 @@ def fetch_feed(self, feed_id: int) -> dict:
     _enqueue_summaries(new_ids, log)
 
     new = len(new_ids)
+    if new:
+        ARTICLES_FETCHED.inc(new)
     status = "not_modified" if result.not_modified else "ok"
     log.info("fetch_feed", status=status, articles_new=new, duration_ms=_ms(started))
     return {"status": status, "articles_new": new}
@@ -181,6 +200,7 @@ def _set_final_status(article_id: int, status: SummaryStatus) -> None:
 
 
 def _fail_article(article_id: int, exc: Exception, log, started: float) -> None:
+    SUMMARIES.labels(status="failed").inc()
     _set_final_status(article_id, SummaryStatus.FAILED)
     log.warning(
         "summarize_article",
@@ -217,6 +237,7 @@ def summarize_article(self, article_id: int) -> dict:
         text = _article_input(article.title, article.content)
         if not text:
             article.summary_status = SummaryStatus.SKIPPED.value
+            SUMMARIES.labels(status="skipped").inc()
             log.info(
                 "summarize_article",
                 status="skipped",
@@ -243,6 +264,7 @@ def summarize_article(self, article_id: int) -> dict:
             cache_hit = True
 
     if cache_hit:
+        SUMMARIES.labels(status="cache_hit").inc()
         # after the commit: the embedding task must see the finished summary
         _enqueue_embedding(article_id, log)
         log.info(
@@ -261,6 +283,7 @@ def summarize_article(self, article_id: int) -> dict:
     try:
         if budget_exceeded(redis_client):
             _set_final_status(article_id, SummaryStatus.SKIPPED)
+            SUMMARIES.labels(status="skipped").inc()
             log.warning(
                 "summarize_article",
                 status="skipped",
@@ -268,7 +291,9 @@ def summarize_article(self, article_id: int) -> dict:
                 duration_ms=_ms(started),
             )
             return {"status": "skipped"}
+        llm_started = time.monotonic()
         result = summarizer.summarize(text)
+        SUMMARY_LATENCY.observe(time.monotonic() - llm_started)
     except (LLMError, redis.RedisError) as exc:
         retryable = isinstance(exc, redis.RedisError) or exc.retryable
         if retryable and self.request.retries < self.max_retries:
@@ -305,6 +330,8 @@ def summarize_article(self, article_id: int) -> dict:
             article.tokens_used = result.tokens
             article.summary_status = SummaryStatus.DONE.value
 
+    SUMMARIES.labels(status="done").inc()
+    LLM_TOKENS.inc(result.tokens)
     _enqueue_embedding(article_id, log)
     log.info(
         "summarize_article",

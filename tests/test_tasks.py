@@ -17,6 +17,7 @@ from app.services.fetcher import (
     UnsafeURLError,
     UpstreamError,
 )
+from tests.helpers import metric_value
 
 LAST_MODIFIED = "Wed, 01 Jan 2026 00:00:00 GMT"
 RSS = b"""<rss version="2.0"><channel><title>Blog</title>
@@ -274,3 +275,56 @@ def test_broker_failure_does_not_break_feed_collection(factory, monkeypatch):
     assert tasks.fetch_feed(feed_id) == {"status": "ok", "articles_new": 2}
     assert len(attempts) == 1  # gave up after the first failure
     assert count_articles(factory) == 2
+
+
+def test_collected_articles_are_counted(factory, monkeypatch):
+    before = metric_value("articles_fetched_total")
+    feed_id = add_feed(factory)
+    stub_fetch(monkeypatch, OK)
+
+    tasks.fetch_feed(feed_id)
+
+    assert metric_value("articles_fetched_total") == before + 2
+
+
+@pytest.mark.parametrize(
+    ("result", "error", "kind"),
+    [
+        (None, ClientHTTPError("HTTP 404"), "permanent"),
+        (FetchResult(False, b"<html>nope</html>", None, None), None, "parse"),
+    ],
+)
+def test_fetch_errors_are_counted_by_kind(factory, monkeypatch, result, error, kind):
+    before = metric_value("fetch_errors_total", kind=kind)
+    feed_id = add_feed(factory)
+    stub_fetch(monkeypatch, result, error)
+
+    tasks.fetch_feed(feed_id)
+
+    assert metric_value("fetch_errors_total", kind=kind) == before + 1
+
+
+def test_temporary_error_is_counted_even_when_retried(factory, monkeypatch):
+    before = metric_value("fetch_errors_total", kind="temporary")
+    feed_id = add_feed(factory)
+    stub_fetch(monkeypatch, error=UpstreamError("HTTP 503"))
+    monkeypatch.setattr(tasks.fetch_feed, "retry", lambda **kwargs: Retry())
+
+    with pytest.raises(Retry):
+        tasks.fetch_feed(feed_id)
+
+    assert metric_value("fetch_errors_total", kind="temporary") == before + 1
+
+
+def test_unexpected_error_is_counted(factory, monkeypatch):
+    before = metric_value("fetch_errors_total", kind="unexpected")
+    feed_id = add_feed(factory)
+    stub_fetch(monkeypatch, OK)
+
+    def boom(content):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(tasks, "parse_feed", boom)
+    tasks.fetch_feed(feed_id)
+
+    assert metric_value("fetch_errors_total", kind="unexpected") == before + 1
