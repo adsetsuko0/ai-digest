@@ -24,7 +24,7 @@ class Feed(Base):
     last_fetched_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
-    is_active: Mapped[bool | None] = mapped_column(Boolean, default=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     user_feeds: Mapped[list["UserFeed"]] = relationship(back_populates="feed")
     etag: Mapped[str | None] = mapped_column(String)

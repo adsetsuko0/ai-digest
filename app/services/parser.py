@@ -102,7 +102,15 @@ def _extract_date(entry: feedparser.FeedParserDict) -> datetime.datetime | None:
     parsed = entry.get("published_parsed") or entry.get("updated_parsed")
     if parsed:
         try:
-            return datetime.datetime(*parsed[:6], tzinfo=datetime.UTC)
+            return datetime.datetime(
+                parsed.tm_year,
+                parsed.tm_mon,
+                parsed.tm_mday,
+                parsed.tm_hour,
+                parsed.tm_min,
+                parsed.tm_sec,
+                tzinfo=datetime.UTC,
+            )
         except (ValueError, TypeError):
             return None
     # feedparser gave up (for example the date has no time zone): try ourselves
