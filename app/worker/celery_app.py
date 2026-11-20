@@ -1,8 +1,11 @@
+import os
+
 from celery import Celery
-from celery.signals import worker_process_init
+from celery.signals import worker_init, worker_process_init
 
 from app.core.config import settings
 from app.core.logging import configure_logging
+from app.core.metrics import start_metrics_server
 
 celery_app = Celery(
     "digest", broker=settings.CELERY_BROKER_URL, include=["app.worker.tasks"]
@@ -27,3 +30,9 @@ celery_app.conf.update(
 @worker_process_init.connect
 def _setup_logging(**kwargs) -> None:
     configure_logging()
+
+
+@worker_init.connect
+def _start_metrics(**kwargs) -> None:
+    port = int(os.environ.get("WORKER_METRICS_PORT", "0"))
+    start_metrics_server(port)

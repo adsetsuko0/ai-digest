@@ -58,7 +58,11 @@ services:
   worker:
     build: .
     env_file: .env
-    environment: *app-environment
+    environment:
+      <<: *app-environment
+      # task processes write their metrics to files here, the main process sums them up
+      PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus_multiproc
+      WORKER_METRICS_PORT: "9100"
     depends_on:
       db:
         condition: service_healthy
@@ -66,7 +70,15 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    command: celery -A app.worker.celery_app:celery_app worker --loglevel=INFO --concurrency=2
+    # the directory must exist and be empty before Python starts (stale files from a
+    # previous run would be counted again); $$ is a literal $ for the shell
+    command:
+      - sh
+      - -c
+      - >-
+        rm -rf "$$PROMETHEUS_MULTIPROC_DIR" &&
+        mkdir -p "$$PROMETHEUS_MULTIPROC_DIR" &&
+        exec celery -A app.worker.celery_app:celery_app worker --loglevel=INFO --concurrency=2
 
   beat:
     build: .
@@ -77,5 +89,48 @@ services:
         condition: service_healthy
     command: celery -A app.worker.celery_app:celery_app beat --loglevel=INFO --schedule /tmp/celerybeat-schedule
 
+  # Monitoring is optional: start it with `docker compose --profile monitoring up -d`
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    profiles: ["monitoring"]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    depends_on:
+      - app
+      - worker
+
+  grafana:
+    image: grafana/grafana:12.1.0
+    profiles: ["monitoring"]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    # refuse to start without a password instead of falling back to a weak default
+    entrypoint:
+      - sh
+      - -c
+      - >-
+        if [ -z "$$GF_SECURITY_ADMIN_PASSWORD" ]; then
+        echo "Set GRAFANA_PASSWORD in .env"; exit 1; fi;
+        exec /run.sh
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - prometheus
+
 volumes:
   postgres_data:
+  prometheus_data:
+  grafana_data:
