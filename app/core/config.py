@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     EMBEDDING_PROVIDER: Literal["fake", "openai"] = "fake"
     EMBEDDING_MODEL: str = ""
     EMBEDDING_DIM: int = Field(default=384, ge=1, le=2000)
+    WORKER_METRICS_PORT: int = Field(default=0, ge=0, le=65535)
 
 
-settings = Settings()
+settings = Settings()  # type: ignore[call-arg]

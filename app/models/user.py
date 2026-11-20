@@ -16,4 +16,4 @@ class User(Base):
         Time, default=datetime.time(9, 0)
     )
     timezone: Mapped[str | None] = mapped_column(String, default="UTC")
-    is_active: Mapped[bool | None] = mapped_column(Boolean, default=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

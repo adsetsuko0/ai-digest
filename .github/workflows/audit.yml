@@ -1,0 +1,26 @@
+name: Dependency audit
+
+on:
+  push:
+    branches: [main]
+    paths: ["requirements*.txt"]
+  pull_request:
+    paths: ["requirements*.txt"]
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pip-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install pip-audit==2.10.1
+      - run: pip-audit -r requirements.txt
