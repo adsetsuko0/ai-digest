@@ -208,14 +208,52 @@ tests/        pytest suite (tests/integration needs PostgreSQL)
 - **A feed disabled automatically stays disabled.** There is no endpoint to re-enable it yet.
 - **The digest is only pulled.** Delivery (Telegram, email) and sending at `digest_time` are not implemented, the setting is stored for later.
 
+
+## Production deployment
+
+The application is deployed on AWS EC2 (Ubuntu 24.04) with Docker Compose and Caddy.
+
+- Production URL: https://ai-digest-anna.duckdns.org
+- Release image: `ghcr.io/adsetsuko0/ai-digest:0.9.0-rc1`
+- HTTPS certificate: Let's Encrypt, managed by Caddy.
+- Services: API, PostgreSQL, RabbitMQ, Redis, Celery worker, Celery beat and Caddy.
+- Database migrations run during deployment.
+- Docker containers restart after server reboot.
+
+### Production verification
+
+Verified on 2026-11-21:
+
+- `/health` returns HTTP 200.
+- `/docs` is accessible over HTTPS.
+- User registration and login work.
+- RSS feed creation and article retrieval work.
+- Search endpoint returns results.
+- Celery worker processes background tasks.
+- Celery beat schedules RSS refreshes every 30 minutes.
+- PostgreSQL, RabbitMQ and Redis report healthy.
+- Internal service ports are not publicly accessible.
+- Application recovers after an EC2 reboot.
+
+Known limitation: embeddings currently use the fake implementation and are not semantic. Real AI embeddings have not yet been configured.
+
+### AWS operational notes
+
+- Keep the production `.env` file private (`chmod 600`).
+- Back up the PostgreSQL database before destructive changes.
+- Do not run `docker compose down -v` unless intentionally deleting application data.
+- Stopping an EC2 instance does not necessarily stop all AWS costs. Check storage and public IPv4 charges.
+- Before the Free Plan expires or credits run out, save a database backup and any required project artifacts locally.
+
 ## Roadmap
 
 - An endpoint to re-enable a disabled feed.
 - Prometheus and Grafana metrics.
-- Deployment to AWS EC2 with HTTPS.
+- Real semantic embeddings.
 - Delivery of the digest at the user's `digest_time`.
 
 Out of scope for now: a web interface, several LLM providers, OPML import, OAuth, email confirmation and password reset, refresh tokens.
+
 
 ## License
 
