@@ -11,3 +11,8 @@ __pycache__
 .ruff_cache
 .coverage
 htmlcov
+.mypy_cache
+.github
+tests
+deploy
+docs

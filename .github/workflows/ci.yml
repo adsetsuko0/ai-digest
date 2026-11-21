@@ -88,7 +88,21 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - name: Compose files are valid
+      
+      - name: Production compose and Caddyfile are valid
+        env:
+          POSTGRES_PASSWORD: ci
+          RABBITMQ_PASSWORD: ci
+          SECRET_KEY: ci-secret-key-0123456789abcdefghijklmnopqrstuvwxyz
+          DOMAIN: example.com
+          AI_DIGEST_VERSION: ci
+        run: |
+          docker compose -f docker-compose.prod.yml config -q
+          docker run --rm -e DOMAIN=example.com \
+            -v "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            caddy:2.11 caddy validate --config /etc/caddy/Caddyfile
+
+      - name: Development compose files are valid
         env:
           POSTGRES_PASSWORD: ci
           RABBITMQ_PASSWORD: ci
