@@ -17,7 +17,7 @@ from app.db.database import get_db
 app = FastAPI(
     title="AI Digest",
     description="Personal news digest based on RSS and LLM summaries",
-    version="0.1.0",
+    version="1.0.0",
 )
 
 
