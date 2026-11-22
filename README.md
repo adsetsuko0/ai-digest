@@ -4,16 +4,40 @@
 
 Backend service for a personal news digest: users register, subscribe to RSS feeds with tags, the service collects new articles in the background, writes a short LLM summary of each one, and serves them back as a digest and through semantic search.
 
-> **Status: work in progress.** The whole pipeline works end to end: accounts, feeds, background collection, summaries, `GET /digest` and `GET /search`. A fake summarizer and a fake embedder let you try everything without an API key. Metrics, deployment and delivery of the digest are still ahead, see the roadmap.
+**Live demo:** https://ai-digest-anna.duckdns.org ([Swagger UI](https://ai-digest-anna.duckdns.org/docs)). The demo uses the fake summarizer and embedder, is meant for evaluation only (use a throwaway email and password, data can be reset at any time) and may go offline: it runs on a time-limited cloud account.
+
+> **Status: v1.0.0.** The whole pipeline works end to end and is deployed to AWS EC2 behind HTTPS: accounts, feeds, background collection, summaries, `GET /digest`, `GET /search`, Prometheus metrics, and a CI/CD pipeline that ships a container image. A fake summarizer and a fake embedder let you try everything without an API key. See the limitations and the roadmap at the end.
 
 ## Tech stack
 
-**Python 3.12 - FastAPI - Pydantic v2 - SQLAlchemy 2 (async API, sync worker) - Alembic - PostgreSQL 16 with pgvector - Redis - Celery + RabbitMQ - httpx - feedparser - structlog - Docker Compose - pytest - respx - ruff - pre-commit - GitHub Actions**
+**Python 3.12 - FastAPI - Pydantic v2 - SQLAlchemy 2 (async API, sync worker) - Alembic - PostgreSQL 16 with pgvector - Redis - Celery + RabbitMQ - httpx - feedparser - structlog - Prometheus - Grafana - Docker Compose - Caddy - AWS EC2 - GitHub Actions and GitHub Container Registry - pytest - respx - ruff - pre-commit**
+
+## Architecture
+
+```mermaid
+flowchart LR
+    client([Client]) -->|HTTPS| caddy["Caddy: TLS, reverse proxy"]
+    caddy --> api["FastAPI app"]
+    api --> pg[("PostgreSQL + pgvector")]
+    api <--> redis[("Redis: cache, rate limits, token counter")]
+    api -->|"enqueue fetch"| mq{{"RabbitMQ"}}
+    beat["Celery Beat: every 30 min"] -->|schedule| mq
+    mq --> worker["Celery worker"]
+    worker -->|download| feeds[("RSS feeds")]
+    worker -->|"summaries, embeddings"| llm["LLM API or fake provider"]
+    worker --> pg
+    worker <--> redis
+    prom["Prometheus"] -.->|scrape| api
+    prom -.->|scrape| worker
+    grafana["Grafana"] --> prom
+```
+
+A user adds a feed: the API stores it and queues a download. Beat also queues every active feed every 30 minutes. The worker downloads and parses the feed, stores new articles, queues a summary task for each one and an embedding task after it. The client reads the results through `/digest` and `/search`. Prometheus and Grafana run only in the local `monitoring` profile.
 
 ## What works today
 
 - **Auth:** registration and login with JWT access tokens. The token carries the user id, passwords are hashed with bcrypt, and login runs a dummy hash for unknown emails so response time does not reveal which accounts exist.
-- **Rate limits** per IP, stored in Redis under Docker Compose: 10 registrations per hour, 10 logins per minute, 60 digest requests per minute, 30 searches per minute.
+- **Rate limits** per client IP, stored in Redis: 10 registrations per hour, 10 logins per minute, 60 digest requests per minute, 30 searches per minute.
 - **Feeds:** add, list (limit/offset pagination) and delete RSS feeds with tags. Feed URLs are validated to block private and internal addresses. Duplicate subscriptions are rejected by a database constraint. A new feed is fetched right away; if the broker is down, adding the feed still succeeds.
 - **Article collection:** Celery Beat runs every 30 minutes. Each active feed that has at least one subscriber gets its own task with a random start delay of up to 60 seconds. A task downloads the feed safely, parses RSS and Atom, removes duplicates (by normalized URL and by content hash) and stores new articles. Repeating a task never creates duplicates.
 - **Safe feed fetcher:** the host is resolved and every address is checked on each download, redirects are followed manually and re-checked, the response is streamed with a 2 MB limit (which also stops compression bombs), and conditional requests (`ETag`, `Last-Modified`) save traffic.
@@ -22,11 +46,19 @@ Backend service for a personal news digest: users register, subscribe to RSS fee
 - **Spend control:** a daily token budget kept in Redis, a cache of summaries by content hash (the same text is never paid for twice), limits on input and output size, and retries only for temporary errors.
 - **Digest:** `GET /digest` returns summaries of articles from your own feeds, newest first, with filters by tag, feed and date, keyset pagination and a 60 second Redis cache.
 - **Semantic search:** each summarized article gets an embedding stored with pgvector. `GET /search` ranks your own articles by cosine similarity to the query. A fake, word-based embedder works without a key.
-- **Structured logs:** every task logs its outcome (`feed_id`, `article_id`, `status`, `tokens`, `duration_ms`). JSON under Docker Compose, readable output locally.
+- **Observability:** Prometheus metrics for the API (requests, latency) and the worker (articles fetched, fetch errors, summaries by status, LLM tokens, summary latency) served on port 9100 inside the Compose network, a Grafana dashboard, and structured logs for every task (`feed_id`, `article_id`, `status`, `tokens`, `duration_ms`).
 - **Data isolation:** users see only their own feeds, digest and search results (covered by tests, including a test on real PostgreSQL).
 - **User settings:** digest time and timezone (stored for the future delivery of the digest).
 - **Health checks:** `/health` and `/health/ready` (checks the database).
-- **Quality:** 350+ tests (4 more run against a real PostgreSQL with pgvector), an 80% coverage gate, ruff and pre-commit, GitHub Actions CI, containers run as a non-root user.
+- **Production deployment:** a Docker Compose stack on AWS EC2 behind Caddy with automatic HTTPS, shipped as a container image from GitHub Container Registry, with restart policies (the stack comes back by itself after a reboot).
+- **CI/CD:** GitHub Actions runs ruff and the test suite with an 80% coverage gate, a type check with mypy, integration tests against a real PostgreSQL with pgvector, and a container build check. A weekly `pip-audit` run and Dependabot watch the dependencies. Pushing a tag `vX.Y.Z` builds and publishes the image.
+- **Quality:** 350+ tests (4 of them need a real PostgreSQL with pgvector), ruff and pre-commit, containers run as a non-root user.
+
+## Screenshots
+
+![Swagger UI](docs/swagger.png)
+
+![Grafana dashboard](docs/grafana.png)
 
 ## Quick start (Docker)
 
@@ -44,28 +76,48 @@ Generate a value for each secret with:
 python -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
 
-`docker-compose.override.yml` is applied automatically: it mounts the source code, runs the server with `--reload` and publishes PostgreSQL on `127.0.0.1:5433`. For a production-like run use `docker compose -f docker-compose.yml up -d --build`.
+`docker-compose.override.yml` is applied automatically: it mounts the source code, runs the server with `--reload` and publishes PostgreSQL on `127.0.0.1:5433`. The production stack is `docker-compose.prod.yml`, see Deployment.
+
+Set GRAFANA_PASSWORD in .env first.
+
+### With monitoring
+
+```bash
+docker compose --profile monitoring up -d --build
+```
+
+| What | Local address |
+|---|---|
+| API and Swagger | http://127.0.0.1:8000/docs |
+| API metrics | http://127.0.0.1:8000/metrics |
+| Prometheus | http://127.0.0.1:9090 (targets: `/targets`) |
+| Grafana | http://127.0.0.1:3000 |
+| RabbitMQ management | http://127.0.0.1:15673 (user and password from `.env`) |
+
+All of them are bound to `127.0.0.1` only.
 
 ### Try it
 
-Register, add a feed and wait about half a minute for the first summaries:
+Register, add a feed and wait about half a minute for the first summaries. Use `BASE=https://ai-digest-anna.duckdns.org` instead to try the live demo.
 
 ```bash
-curl -s -X POST http://127.0.0.1:8000/auth/register \
+BASE=http://127.0.0.1:8000
+
+curl -s -X POST $BASE/auth/register \
   -H "Content-Type: application/json" \
   -d '{"email":"me@example.com","password":"correct-horse-1"}'
 
-TOKEN=$(curl -s -X POST http://127.0.0.1:8000/auth/login \
+TOKEN=$(curl -s -X POST $BASE/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email":"me@example.com","password":"correct-horse-1"}' \
   | python -c "import sys, json; print(json.load(sys.stdin)['access_token'])")
 
-curl -s -X POST http://127.0.0.1:8000/feeds \
+curl -s -X POST $BASE/feeds \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"url":"https://feeds.bbci.co.uk/news/technology/rss.xml","tags":["tech"]}'
 
-curl -s "http://127.0.0.1:8000/digest?tag=tech&limit=5" -H "Authorization: Bearer $TOKEN"
-curl -s "http://127.0.0.1:8000/search?q=python&limit=5" -H "Authorization: Bearer $TOKEN"
+curl -s "$BASE/digest?tag=tech&limit=5" -H "Authorization: Bearer $TOKEN"
+curl -s "$BASE/search?q=python&limit=5" -H "Authorization: Bearer $TOKEN"
 ```
 
 A page of the digest looks like this; pass `next_cursor` as `?cursor=` to get the next page:
@@ -92,7 +144,7 @@ A page of the digest looks like this; pass `next_cursor` as `?cursor=` to get th
 Beat starts collection every 30 minutes on its own. To run it by hand:
 
 ```bash
-docker compose exec worker celery -A app.worker.celery_app call app.worker.tasks.fetch_all_feeds
+docker compose exec worker celery -A app.worker.celery_app:celery_app call app.worker.tasks.fetch_all_feeds
 docker compose logs -f worker
 ```
 
@@ -103,8 +155,6 @@ docker compose exec db psql -U digest_user -d digest_db \
   -c "select summary_status, count(*), sum(tokens_used), count(embedding) from articles group by 1"
 ```
 
-The RabbitMQ management UI is available at http://127.0.0.1:15672 (user and password from `.env`). It is bound to `127.0.0.1` only.
-
 ## Configuration
 
 | Variable | Required | Description |
@@ -112,6 +162,8 @@ The RabbitMQ management UI is available at http://127.0.0.1:15672 (user and pass
 | `SECRET_KEY` | yes | JWT signing key, at least 32 characters |
 | `POSTGRES_PASSWORD` | yes (Docker) | Password of the database user |
 | `RABBITMQ_PASSWORD` | yes (Docker) | Password of the RabbitMQ user |
+| `GRAFANA_PASSWORD` | with monitoring | Grafana admin password; the `monitoring` profile refuses to start without it |
+| `DOMAIN` | production | Public host name served by Caddy |
 | `POSTGRES_USER` | no | Database user, default `digest_user` |
 | `POSTGRES_DB` | no | Database name, default `digest_db` |
 | `RABBITMQ_USER` | no | RabbitMQ user, default `digest` |
@@ -129,7 +181,8 @@ The RabbitMQ management UI is available at http://127.0.0.1:15672 (user and pass
 | `EMBEDDING_MODEL` | with `openai` | Embedding model |
 | `EMBEDDING_DIM` | no | Vector size, default `384`; must match the model, see the limitations |
 
-Database, Redis and RabbitMQ URLs are assembled in `docker-compose.yml` from these values. The API uses `DATABASE_URL` (asyncpg), the worker uses `DATABASE_SYNC_URL` (psycopg2).
+
+Database, Redis and RabbitMQ URLs are assembled in the Compose files from these values. The API uses `DATABASE_URL` (asyncpg), the worker uses `DATABASE_SYNC_URL` (psycopg2). `deploy/env.prod.example` lists what to set on the server (domain, image version, passwords).
 
 ## API overview
 
@@ -145,6 +198,38 @@ Database, Redis and RabbitMQ URLs are assembled in `docker-compose.yml` from the
 | GET | `/digest?tag=&feed_id=&since=&limit=&cursor=` | yes | Summaries from your feeds, newest first |
 | GET | `/search?q=&limit=` | yes | Your articles closest to the query |
 | GET | `/health`, `/health/ready` | no | Liveness and readiness |
+| GET | `/metrics` | no | Prometheus metrics, used by the local monitoring stack; the production proxy answers 404 |
+
+## Observability
+
+- **API metrics:** request counts and latency per route at `/metrics`.
+- **Worker metrics:** `articles_fetched_total`, `fetch_errors_total` (by kind), `summaries_total` (by status), `llm_tokens_total` and `summary_latency_seconds`. A Celery worker runs several processes, so the worker uses Prometheus' multiprocess mode, otherwise counters incremented in child processes would be invisible. Threads instead of processes would not help: task time limits only work with the process pool.
+- **Prometheus and Grafana** are in the `monitoring` Compose profile (off by default). Prometheus scrapes the API and the worker every 15 seconds, and the Grafana dashboard and data source are provisioned from `deploy/grafana`.
+- **Logs:** structured logs with the outcome of every task, JSON under Docker Compose.
+- **On the server** the monitoring profile is not started (the instance is small) and `/metrics` is not reachable from the internet. Metrics are viewed locally.
+
+## Deployment
+
+The demo runs as a Docker Compose stack on one small AWS EC2 instance (Ubuntu 24.04, `t3.small`, `eu-north-1`) with swap, seven containers: API, worker, Beat, PostgreSQL, Redis, RabbitMQ and Caddy.
+
+**How a release reaches the server**
+
+1. Pushing a tag `vX.Y.Z` runs the Release workflow. It builds the image and publishes it to GitHub Container Registry (`ghcr.io/adsetsuko0/ai-digest`).
+2. On the server, `bash deploy/deploy.sh X.Y.Z` pulls exactly that image, applies the database migrations, restarts the stack and checks `/health`. The version is remembered, so a later plain `docker compose up` does not go back to an older image.
+3. Rolling back means deploying the previous tag (safe when the newer version added no migrations).
+
+The server never builds code, it only runs an image that was already tested in CI. The deploy is manual on purpose: SSH is open only from the owner's address, so a CI runner cannot reach the server.
+
+**What is exposed**
+
+- Only ports 80 and 443 (Caddy, with a certificate that is issued and renewed automatically) and SSH from the owner's address.
+- PostgreSQL, Redis and the RabbitMQ broker port are not published. The RabbitMQ management UI is bound to the server's loopback address only and is reached through an SSH tunnel. Docker bypasses host firewalls such as `ufw` for published ports, so not publishing a port is the real protection.
+- The application port is not published either, so only Caddy can reach the app. That is why trusting the forwarded headers (`FORWARDED_ALLOW_IPS=*`) is safe here, and rate limits see real client addresses instead of the proxy's.
+- `/metrics` answers 404 on the public address.
+
+**Secrets and configuration:** the `.env` file lives only on the server (mode 600) and never in the repository or in the image. The Compose file is selected with `COMPOSE_FILE=docker-compose.prod.yml` in that `.env`, so a plain `docker compose` command on the server never picks up the development stack.
+
+**Cost control:** the demo runs on an account with a spending cap and a limited number of credits, the LLM and embedding providers are fake, real providers have a daily token budget, and the instance is stopped when it is not needed. The cloud plan ends on 21 May 2027 and the demo goes offline with it.
 
 ## Running the tests
 
@@ -157,7 +242,7 @@ pytest --cov=app
 
 The main suite uses an in-memory SQLite database, so neither Docker nor Postgres is needed. Network access is faked with `respx`, and DNS lookups are replaced in the tests, so nothing goes to the internet.
 
-Four integration tests check vector search and pagination on a real PostgreSQL with pgvector. They are skipped by default. Point `TEST_DATABASE_URL` at an empty database whose name ends with `_test` (the tables are dropped), for example with the Compose database:
+Four integration tests check vector search and pagination on a real PostgreSQL with pgvector. They are skipped by default (CI runs them against a PostgreSQL service). Point `TEST_DATABASE_URL` at an empty database whose name ends with `_test` (the tables are dropped), for example with the Compose database:
 
 ```bash
 docker compose exec db psql -U digest_user -d postgres -c "CREATE DATABASE digest_test"
@@ -169,7 +254,7 @@ TEST_DATABASE_URL=postgresql+asyncpg://digest_user:<password>@127.0.0.1:5433/dig
 ```
 app/
   api/        route handlers (auth, users, feeds, digest, search)
-  core/       settings, JWT and bcrypt, rate limiting, Redis clients, URL validation, logging
+  core/       settings, JWT and bcrypt, rate limiting, Redis clients, URL validation, logging, metrics
   db/         async engine for the API, sync session for the worker
   models/     SQLAlchemy models
   schemas/    Pydantic request and response models
@@ -178,6 +263,12 @@ app/
   worker/     Celery app and tasks
 migrations/   Alembic migrations
 tests/        pytest suite (tests/integration needs PostgreSQL)
+deploy/       Caddyfile, deploy.sh, env.prod.example, Prometheus and Grafana configuration
+docs/         screenshots
+docker-compose.yml           development stack (plus the monitoring profile)
+docker-compose.override.yml  development overrides, applied automatically
+docker-compose.prod.yml      production stack
+.github/workflows/  CI, release and weekly dependency audit pipelines (plus Dependabot)
 ```
 
 ## Design decisions
@@ -195,6 +286,9 @@ tests/        pytest suite (tests/integration needs PostgreSQL)
 - **Redis has a narrow role:** it caches digest pages (60 seconds, the user id is part of the key), stores rate limit counters and the daily token counter. It is not a queue: RabbitMQ is the broker.
 - **The cache and Redis are optional for correctness.** If Redis is down, `/digest` reads from the database.
 - **The pgvector Postgres image is used from the start**, so semantic search did not require changing the database image later.
+- **An image is shipped, nothing is built on the server.** One image is built and tested once in CI, the server only pulls it. A rollout is `pull`, migrate, `up`, and a rollback is deploying the previous tag.
+- **Only the reverse proxy faces the internet.** Every other service lives inside the Docker network, and the proxy hides `/metrics`.
+- **Monitoring is a Compose profile**, off by default and off on the small production instance, so the demo stays cheap.
 
 ## Known limitations
 
@@ -202,58 +296,25 @@ tests/        pytest suite (tests/integration needs PostgreSQL)
 - **`skipped` and `failed` are final statuses.** An article skipped because the daily budget ran out is not summarized again the next day, and an article whose summary failed permanently is not retried.
 - **Fake embeddings are not semantic.** The fake embedder compares words, so "car" and "automobile" are unrelated for it. Real meaning needs `EMBEDDING_PROVIDER=openai`.
 - **Changing `EMBEDDING_DIM` needs a migration** (the column size is fixed when the migration runs) and re-embedding of all articles.
-- **Rate limits are counted per IP.** Behind a reverse proxy without forwarded headers all users would share one address.
+- **Rate limits are counted per client IP.** The address comes from the forwarded headers set by Caddy. Behind a proxy that does not set them, all users would share one address.
 - **Search has no vector index yet**, so it compares the query with every article of the user (exact, fine at this size). With an approximate index the filter by user would be applied after the index lookup, so a user with few articles could get fewer results than `limit`. A larger deployment needs another approach, for example partitioning or filtered search.
 - **The digest can be up to 60 seconds behind** because of the cache.
 - **A feed disabled automatically stays disabled.** There is no endpoint to re-enable it yet.
 - **The digest is only pulled.** Delivery (Telegram, email) and sending at `digest_time` are not implemented, the setting is stored for later.
-
-
-## Production deployment
-
-The application is deployed on AWS EC2 (Ubuntu 24.04) with Docker Compose and Caddy.
-
-- Production URL: https://ai-digest-anna.duckdns.org
-- Release image: `ghcr.io/adsetsuko0/ai-digest:0.9.0-rc1`
-- HTTPS certificate: Let's Encrypt, managed by Caddy.
-- Services: API, PostgreSQL, RabbitMQ, Redis, Celery worker, Celery beat and Caddy.
-- Database migrations run during deployment.
-- Docker containers restart after server reboot.
-
-### Production verification
-
-Verified on 2026-11-21:
-
-- `/health` returns HTTP 200.
-- `/docs` is accessible over HTTPS.
-- User registration and login work.
-- RSS feed creation and article retrieval work.
-- Search endpoint returns results.
-- Celery worker processes background tasks.
-- Celery beat schedules RSS refreshes every 30 minutes.
-- PostgreSQL, RabbitMQ and Redis report healthy.
-- Internal service ports are not publicly accessible.
-- Application recovers after an EC2 reboot.
-
-Known limitation: embeddings currently use the fake implementation and are not semantic. Real AI embeddings have not yet been configured.
-
-### AWS operational notes
-
-- Keep the production `.env` file private (`chmod 600`).
-- Back up the PostgreSQL database before destructive changes.
-- Do not run `docker compose down -v` unless intentionally deleting application data.
-- Stopping an EC2 instance does not necessarily stop all AWS costs. Check storage and public IPv4 charges.
-- Before the Free Plan expires or credits run out, save a database backup and any required project artifacts locally.
+- **One machine, no failover.** The database lives in a Docker volume on a single server, and there are no automated backups (the demo holds no real data).
+- **Manual deploy.** The image is built automatically, but the rollout is a command run over SSH from the owner's address.
+- **No monitoring on the server.** The dashboards run locally only, and there are no alerts.
+- **The demo is temporary.** It runs on a time-limited cloud account and goes offline on 21 May 2027.
 
 ## Roadmap
 
 - An endpoint to re-enable a disabled feed.
-- Prometheus and Grafana metrics.
-- Real semantic embeddings.
 - Delivery of the digest at the user's `digest_time`.
+- Automated backups of the database.
+- Automated deploy without opening SSH (for example AWS SSM with GitHub OIDC).
+- Monitoring and alerts on the server.
 
 Out of scope for now: a web interface, several LLM providers, OPML import, OAuth, email confirmation and password reset, refresh tokens.
-
 
 ## License
 
