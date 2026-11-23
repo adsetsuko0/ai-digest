@@ -32,7 +32,7 @@ flowchart LR
     grafana["Grafana"] --> prom
 ```
 
-A user adds a feed: the API stores it and queues a download. Beat also queues every active feed every 30 minutes. The worker downloads and parses the feed, stores new articles, queues a summary task for each one and an embedding task after it. The client reads the results through `/digest` and `/search`. Prometheus and Grafana run only in the local `monitoring` profile.
+A user adds a feed: the API stores it and queues a download. Beat also queues every active feed every 30 minutes. The worker downloads and parses the feed, stores new articles, queues a summary task for each one and an embedding task after it. The client reads the results through `/digest` and `/search`. Locally, Prometheus and Grafana run in the optional `monitoring` profile. In production, they run as a separate Compose project.
 
 ## What works today
 
@@ -198,19 +198,20 @@ Database, Redis and RabbitMQ URLs are assembled in the Compose files from these 
 | GET | `/digest?tag=&feed_id=&since=&limit=&cursor=` | yes | Summaries from your feeds, newest first |
 | GET | `/search?q=&limit=` | yes | Your articles closest to the query |
 | GET | `/health`, `/health/ready` | no | Liveness and readiness |
-| GET | `/metrics` | no | Prometheus metrics, used by the local monitoring stack; the production proxy answers 404 |
+| GET | `/metrics` | no | Prometheus metrics; scraped internally by local and production monitoring, but not exposed publicly |
 
 ## Observability
 
 - **API metrics:** request counts and latency per route at `/metrics`.
 - **Worker metrics:** `articles_fetched_total`, `fetch_errors_total` (by kind), `summaries_total` (by status), `llm_tokens_total` and `summary_latency_seconds`. A Celery worker runs several processes, so the worker uses Prometheus' multiprocess mode, otherwise counters incremented in child processes would be invisible. Threads instead of processes would not help: task time limits only work with the process pool.
-- **Prometheus and Grafana** are in the `monitoring` Compose profile (off by default). Prometheus scrapes the API and the worker every 15 seconds, and the Grafana dashboard and data source are provisioned from `deploy/grafana`.
+- **Local monitoring:** Prometheus and Grafana are in the optional `monitoring` Compose profile. Prometheus scrapes the API and worker every 15 seconds; the Grafana dashboard and data source are provisioned from `deploy/grafana`.
+- **Production monitoring:** Prometheus and Grafana run in a separate Compose project defined by `docker-compose.monitoring.yml`. They scrape the API and worker over the Docker network. Grafana is accessed through an SSH tunnel.
 - **Logs:** structured logs with the outcome of every task, JSON under Docker Compose.
-- **On the server** the monitoring profile is not started (the instance is small) and `/metrics` is not reachable from the internet. Metrics are viewed locally.
+- **Access:** `/metrics` is not reachable from the public internet. Production Grafana is bound to the server's loopback interface and accessed through an SSH tunnel.
 
 ## Deployment
 
-The demo runs as a Docker Compose stack on one small AWS EC2 instance (Ubuntu 24.04, `t3.small`, `eu-north-1`) with swap, seven containers: API, worker, Beat, PostgreSQL, Redis, RabbitMQ and Caddy.
+The demo runs as a Docker Compose stack on one small AWS EC2 instance (Ubuntu 24.04, `t3.small`, `eu-north-1`) with swap. The application stack has seven containers: API, worker, Beat, PostgreSQL, Redis, RabbitMQ and Caddy. Prometheus and Grafana run separately in another Compose project.
 
 **How a release reaches the server**
 
@@ -267,7 +268,8 @@ deploy/       Caddyfile, deploy.sh, env.prod.example, Prometheus and Grafana con
 docs/         screenshots
 docker-compose.yml           development stack (plus the monitoring profile)
 docker-compose.override.yml  development overrides, applied automatically
-docker-compose.prod.yml      production stack
+docker-compose.prod.yml      production application stack
+docker-compose.monitoring.yml production monitoring stack
 .github/workflows/  CI, release and weekly dependency audit pipelines (plus Dependabot)
 ```
 
@@ -288,7 +290,7 @@ docker-compose.prod.yml      production stack
 - **The pgvector Postgres image is used from the start**, so semantic search did not require changing the database image later.
 - **An image is shipped, nothing is built on the server.** One image is built and tested once in CI, the server only pulls it. A rollout is `pull`, migrate, `up`, and a rollback is deploying the previous tag.
 - **Only the reverse proxy faces the internet.** Every other service lives inside the Docker network, and the proxy hides `/metrics`.
-- **Monitoring is a Compose profile**, off by default and off on the small production instance, so the demo stays cheap.
+- **Monitoring is separated from the application stack.** Local monitoring is an optional Compose profile. On the production server, Prometheus and Grafana run in a separate Compose project, keeping them independent from application deployments.
 
 ## Known limitations
 
@@ -303,7 +305,7 @@ docker-compose.prod.yml      production stack
 - **The digest is only pulled.** Delivery (Telegram, email) and sending at `digest_time` are not implemented, the setting is stored for later.
 - **One machine, no failover.** The database lives in a Docker volume on a single server, and there are no automated backups (the demo holds no real data).
 - **Manual deploy.** The image is built automatically, but the rollout is a command run over SSH from the owner's address.
-- **No monitoring on the server.** The dashboards run locally only, and there are no alerts.
+- **No monitoring alerts.** Prometheus and Grafana run on the server, but there are no alerting rules or notification channels yet.
 - **The demo is temporary.** It runs on a time-limited cloud account and goes offline on 21 May 2027.
 
 ## Roadmap
@@ -312,7 +314,7 @@ docker-compose.prod.yml      production stack
 - Delivery of the digest at the user's `digest_time`.
 - Automated backups of the database.
 - Automated deploy without opening SSH (for example AWS SSM with GitHub OIDC).
-- Monitoring and alerts on the server.
+- Monitoring alerts and notification channels.
 
 Out of scope for now: a web interface, several LLM providers, OPML import, OAuth, email confirmation and password reset, refresh tokens.
 
