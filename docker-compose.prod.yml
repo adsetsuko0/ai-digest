@@ -101,8 +101,17 @@ services:
   worker:
     image: *app-image
     restart: unless-stopped
-    environment: *app-environment
-    command: celery -A app.worker.celery_app:celery_app worker --loglevel=INFO --concurrency=2
+    environment:
+      <<: *app-environment
+      PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus_multiproc
+      WORKER_METRICS_PORT: "9100"
+    command:
+      - sh
+      - -c
+      - >-
+        rm -rf "$$PROMETHEUS_MULTIPROC_DIR" &&
+        mkdir -p "$$PROMETHEUS_MULTIPROC_DIR" &&
+        exec celery -A app.worker.celery_app:celery_app worker --loglevel=INFO --concurrency=2
     depends_on:
       db:
         condition: service_healthy
